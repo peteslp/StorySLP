@@ -961,7 +961,9 @@ export default async function handler(req: any, res: any) {
         if (!beats.length) return json(res, 400, { error: "This story has no scenes to illustrate." });
         const b = await readBody(req);
         const from = Math.max(0, Number(b.from) || 0);
-        const batch = Math.min(Math.max(1, Number(b.count) || 3), 4);
+        // One panel per request: a single gpt-image-1 1024x1024 takes ~45s, so
+        // generating more than one in a request risks the 60s function timeout.
+        const batch = Math.min(Math.max(1, Number(b.count) || 1), 1);
         try {
           // grade band from the story's group students
           const groups = await storage.listGroups();

@@ -25,12 +25,13 @@ export function useComic(storyId: number, initialPanels: ComicPanel[] = []) {
     try {
       let from = 0;
       let done = false;
-      // Loop batches until the server reports the whole comic is done.
+      // Loop one panel per request until the server reports the comic is done.
+      // One panel takes ~45s; batching more risks the 60s serverless timeout.
       // Guard with a generous cap so a runaway never loops forever.
-      for (let guard = 0; guard < 40 && !done; guard++) {
+      for (let guard = 0; guard < 60 && !done; guard++) {
         const res = await apiRequest("POST", `/api/stories/${storyId}/comic`, {
           from,
-          count: 3,
+          count: 1,
         });
         const data = (await res.json()) as BatchResult;
         setPanels(data.panels || []);
