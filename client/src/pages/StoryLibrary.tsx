@@ -450,8 +450,8 @@ function ComicPanelSection({
         {comic.generating
           ? `Drawing ${comic.progress?.completed ?? 0}/${comic.progress?.total ?? totalBeats}…`
           : hasPanels
-            ? `${comic.panels.length} panels · classic comic style`
-            : "Illustrate every scene in classic comic-book style."}
+            ? `${comic.panels.length} panels · manga style (B&W + red)`
+            : "Illustrate every scene in modern manga style — black & white with red accents."}
       </div>
       <div className="ml-auto flex gap-2">
         <Button

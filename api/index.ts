@@ -497,10 +497,17 @@ async function synthesizeStoryAudio(
 const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 const IMAGE_BUCKET = "story-images";
 const COMIC_STYLE =
-  "Classic American comic-book art style: bold black ink outlines, dynamic cel shading, " +
-  "halftone dot shading, vivid saturated colors, dramatic lighting. Single comic panel, " +
-  "no speech bubbles, no text, no captions, no lettering, no panel borders or gutters. " +
-  "Wholesome, child-friendly, suitable for an elementary classroom.";
+  "Modern Japanese manga / adventure comic art style: clean confident black ink linework, " +
+  "expressive characters, dynamic composition. Mostly BLACK AND WHITE with grayscale " +
+  "screentone shading. The ONLY color used is RED — crimson and scarlet red tones used " +
+  "sparingly as a dramatic accent (highlights, key objects, mood); everything else stays " +
+  "black, white and gray. Bold high-contrast inking, lots of clean white space, striking and simple. " +
+  "Single illustration, NO speech bubbles, NO text, NO captions, NO lettering, NO sound effects, " +
+  "NO panel borders or gutters. Wholesome, child-friendly, suitable for an elementary classroom.";
+
+// Image render quality (gpt-image-1: "low" | "medium" | "high"). Medium is faster
+// than high and the simpler monochrome style holds up well at this quality.
+const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "medium";
 
 // Ask the model once for a compact, fixed visual description of the cast so panels stay consistent.
 async function deriveCharacterSheet(story: any): Promise<string> {
@@ -561,6 +568,7 @@ ${beatText}`;
       prompt: prompt.slice(0, 3800),
       n: 1,
       size: "1024x1024",
+      quality: OPENAI_IMAGE_QUALITY,
     }),
   });
   if (!res.ok) {
@@ -982,7 +990,7 @@ export default async function handler(req: any, res: any) {
             ...existing,
             cast,
             panels,
-            style: "classic-comic",
+            style: "manga-red",
             total: beats.length,
           });
 
@@ -1005,7 +1013,7 @@ export default async function handler(req: any, res: any) {
           const images = {
             cast,
             panels,
-            style: "classic-comic",
+            style: "manga-red",
             total: beats.length,
             generated_at: new Date().toISOString(),
           };
