@@ -64,9 +64,9 @@ ${goalLines}
 ${theme}
 
 REQUIREMENTS:
-- 5 to 7 ordered "beats" (scenes). Each beat is 2-4 sentences of engaging narrative that flows into the next.
+- LENGTH TARGET: this story must fill a FULL ~30-minute therapy session. Write 10 to 14 ordered "beats" (scenes). Each beat must be a SUBSTANTIAL paragraph of 5-8 sentences (~90-140 words) of rich, descriptive narrative with vivid setting, dialogue, and rising action. Total narrative roughly 1,000-1,500 words with a real arc (setup, escalating challenges, climax, resolution).
 - FERPA / privacy: the story's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names.
-- Create at least ONE stop-point per goalId listed (more is fine for goals that need extra practice). Distribute stop-points across the beats; multiple stop-points may follow the same beat.
+- Create at LEAST TWO stop-points per goalId listed (more is fine), so each student gets repeated practice across the longer story. Distribute stop-points across the beats; multiple stop-points may follow the same beat.
 - Each stop-point MUST reference concrete words, phrases, or events from the beat it follows (afterBeatId), so the practice is grounded in what was just read.
 - Tailor each stop-point to its goal type:
     * vocab/context clues: ask the student to infer a word's meaning using sentence context.
@@ -80,7 +80,7 @@ REQUIREMENTS:
 Return ONLY valid JSON (no markdown), with this exact shape:
 {
   "title": "string",
-  "est_minutes": 15,
+  "est_minutes": 30,
   "beats": [{"id":"b1","text":"..."}, {"id":"b2","text":"..."}],
   "stop_points": [
     {"id":"s1","afterBeatId":"b1","studentId":<number>,"goalId":<number>,"goalType":"<type>","question":"...","targetResponse":"...","teachingNote":"...","responseType":"open"},

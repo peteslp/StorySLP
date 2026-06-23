@@ -454,10 +454,14 @@ ${goalLines}
 
 ${theme}
 
+LENGTH TARGET — IMPORTANT:
+- This story must fill a FULL ~30-minute therapy session of reading aloud plus stop-point discussion. Do NOT write a short story.
+- Write 10 to 14 ordered "beats" (scenes). Each beat must be a SUBSTANTIAL paragraph of 5-8 sentences (~90-140 words) of rich, descriptive narrative — vivid setting, character dialogue, and rising action — that flows into the next beat.
+- The total narrative across all beats should be roughly 1,000-1,500 words. Develop a real arc: setup, escalating challenges, a climax, and a resolution.
+
 REQUIREMENTS:
-- 5 to 7 ordered "beats" (scenes). Each beat is 2-4 sentences of engaging narrative that flows into the next.
 - FERPA / privacy: the story's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names.
-- Create at least ONE stop-point per goalId listed. Distribute stop-points across the beats; multiple stop-points may follow the same beat.
+- Create at LEAST TWO stop-points per goalId listed (more is fine), so each student gets repeated practice across the longer story. Distribute stop-points across the beats; multiple stop-points may follow the same beat.
 - Each stop-point MUST reference concrete words, phrases, or events from the beat it follows (afterBeatId).
 - Tailor each stop-point to its goal type:
     * vocab/context clues: ask the student to infer a word's meaning using sentence context.
@@ -471,7 +475,7 @@ REQUIREMENTS:
 Return ONLY valid JSON with this exact shape:
 {
   "title": "string",
-  "est_minutes": 15,
+  "est_minutes": 30,
   "beats": [{"id":"b1","text":"..."}],
   "stop_points": [
     {"id":"s1","afterBeatId":"b1","studentId":0,"goalId":0,"goalType":"<type>","question":"...","targetResponse":"...","teachingNote":"...","responseType":"open"}
@@ -489,6 +493,7 @@ Return ONLY valid JSON with this exact shape:
       messages: [{ role: "user", content: prompt }],
       response_format: { type: "json_object" },
       temperature: 0.8,
+      max_tokens: 8000,
     }),
   });
   if (!res.ok) {
@@ -499,7 +504,7 @@ Return ONLY valid JSON with this exact shape:
   const raw = data?.choices?.[0]?.message?.content || "";
   const parsed = JSON.parse(extractJson(raw));
 
-  parsed.est_minutes = parsed.est_minutes || 15;
+  parsed.est_minutes = parsed.est_minutes || 30;
   parsed.beats = (parsed.beats || []).map((b: any, i: number) => ({
     id: b.id || `b${i + 1}`,
     text: b.text,
