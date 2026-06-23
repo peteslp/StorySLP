@@ -306,7 +306,7 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
             <div className="space-y-6">
               {/* Beat text */}
               <div>
-                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-primary">
+                <div className="mb-1 font-mono text-xs font-semibold uppercase tracking-wider text-primary">
                   Scene {current.beatIndex + 1} of {totalBeats}
                 </div>
                 <p

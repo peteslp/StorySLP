@@ -41,11 +41,13 @@ export default function Login({ onSuccess }: { onSuccess: () => void }) {
     <div className="min-h-screen w-full flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-6 text-center">
-          <div className="flex items-center gap-2 text-primary mb-2">
-            <BookOpen className="h-8 w-8" />
-            <span className="text-2xl font-bold font-display tracking-tight text-foreground">StorySLP</span>
+          <div className="flex items-center gap-2 mb-2">
+            <BookOpen className="h-8 w-8 text-primary" />
+            <span className="text-2xl font-bold font-display tracking-tight text-foreground">
+              Story<span className="text-primary">SLP</span>
+            </span>
           </div>
-          <p className="text-sm text-muted-foreground">One story. Every goal.</p>
+          <p className="font-mono text-xs uppercase tracking-wider text-muted-foreground">One story. Every goal.</p>
         </div>
         <Card>
           <CardContent className="pt-6">

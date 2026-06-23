@@ -43,18 +43,18 @@ export default function Today() {
   return (
     <AppShell>
       {/* Hero */}
-      <section className="mb-8 rounded-xl border bg-gradient-to-br from-primary/10 via-card to-accent/10 p-6 md:p-8">
+      <section className="mb-8 rounded-xl border bg-card p-6 md:p-8">
         <div className="flex items-center gap-2 text-primary">
           <Sparkles className="h-5 w-5" />
-          <span className="text-sm font-semibold uppercase tracking-wide">
+          <span className="font-mono text-xs font-semibold uppercase tracking-wider">
             StorySLP
           </span>
         </div>
         <h1
-          className="mt-2 font-display text-xl font-bold text-foreground"
+          className="mt-2 font-display text-2xl font-bold tracking-tight text-foreground"
           data-testid="text-hero-title"
         >
-          One story. Every goal.
+          One story. <span className="text-primary">Every goal.</span>
         </h1>
         <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
           Pick a group scheduled today and run its story scene by scene — every

@@ -369,7 +369,7 @@ export function StoryPreviewDialog({
             const panel = panelByBeat.get(beat.id);
             return (
               <div key={beat.id} data-testid={`preview-beat-${beat.id}`}>
-                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-primary">
+                <div className="mb-1 font-mono text-xs font-semibold uppercase tracking-wider text-primary">
                   Scene {idx + 1}
                 </div>
                 <div className="flex gap-3">

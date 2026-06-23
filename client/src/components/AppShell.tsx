@@ -92,7 +92,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             onClick={onNavigate}
             data-testid={item.testid}
             className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors hover-elevate",
+              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors hover-elevate",
               active
                 ? "bg-primary text-primary-foreground"
                 : "text-foreground/80",
@@ -112,10 +112,12 @@ function Brand() {
     <Link href="/" data-testid="link-brand" className="flex items-center gap-2.5">
       <Logo />
       <div className="leading-tight">
-        <div className="font-display text-lg font-bold text-foreground">
-          StorySLP
+        <div className="font-display text-lg font-bold tracking-tight text-foreground">
+          Story<span className="text-primary">SLP</span>
         </div>
-        <div className="text-xs text-muted-foreground">One story. Every goal.</div>
+        <div className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+          one story. every goal.
+        </div>
       </div>
     </Link>
   );
