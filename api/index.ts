@@ -310,6 +310,14 @@ const storage = {
     });
     return rows[0] ? parseStoryRow(rows[0]) : undefined;
   },
+  async updateStoryImages(id: number, status: string, images: any) {
+    const rows = await sb<any[]>(`/stories?id=eq.${id}`, {
+      method: "PATCH",
+      headers: repr,
+      body: JSON.stringify({ image_status: status, images_json: JSON.stringify(images ?? {}) }),
+    });
+    return rows[0] ? parseStoryRow(rows[0]) : undefined;
+  },
 
   // ---------- Sessions + logs ----------
   listSessions(groupId: number) {
@@ -483,6 +491,107 @@ async function synthesizeStoryAudio(
     chars: text.length,
     generated_at: new Date().toISOString(),
   };
+}
+
+// ---------------- Comic strip (OpenAI images) ----------------
+const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+const IMAGE_BUCKET = "story-images";
+const COMIC_STYLE =
+  "Classic American comic-book art style: bold black ink outlines, dynamic cel shading, " +
+  "halftone dot shading, vivid saturated colors, dramatic lighting. Single comic panel, " +
+  "no speech bubbles, no text, no captions, no lettering, no panel borders or gutters. " +
+  "Wholesome, child-friendly, suitable for an elementary classroom.";
+
+// Ask the model once for a compact, fixed visual description of the cast so panels stay consistent.
+async function deriveCharacterSheet(story: any): Promise<string> {
+  const beats = (Array.isArray(story?.beats) ? story.beats : [])
+    .map((b: any) => (b?.text || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const prompt = `Read this children's story and produce a CONCISE visual "character bible" so an artist can draw the same characters consistently in every panel.
+For each recurring named character, give 1 line: name, age range, hair, skin tone, signature outfit/colors, and one distinguishing feature. Also give a 1-line description of the main setting.
+Keep the WHOLE thing under 120 words. No preamble, just the lines.
+
+STORY:
+${beats}`;
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.4,
+      max_tokens: 400,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OpenAI (char sheet) ${res.status}: ${body}`);
+  }
+  const data: any = await res.json();
+  return (data?.choices?.[0]?.message?.content || "").trim();
+}
+
+// Generate one comic panel PNG (base64) for a beat, anchored to the character sheet.
+async function generateComicPanel(
+  beatText: string,
+  charSheet: string,
+  band: string,
+): Promise<Buffer> {
+  const prompt = `${COMIC_STYLE}
+
+AUDIENCE: ${band}.
+
+CONSISTENT CAST AND SETTING (draw these exactly the same way every time):
+${charSheet}
+
+DEPICT THIS SCENE as a single comic panel:
+${beatText}`;
+  const res = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_IMAGE_MODEL,
+      prompt: prompt.slice(0, 3800),
+      n: 1,
+      size: "1024x1024",
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OpenAI image ${res.status}: ${body}`);
+  }
+  const data: any = await res.json();
+  const b64 = data?.data?.[0]?.b64_json;
+  if (!b64) throw new Error("Image model returned no image data.");
+  return Buffer.from(b64, "base64");
+}
+
+// Upload a PNG buffer to the public image bucket; return its public URL.
+async function uploadImage(objectPath: string, png: Buffer): Promise<string> {
+  const url = `${SUPABASE_URL}/storage/v1/object/${IMAGE_BUCKET}/${objectPath}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "image/png",
+      "x-upsert": "true",
+      "Cache-Control": "public, max-age=31536000",
+    },
+    body: png,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Image upload ${res.status}: ${body}`);
+  }
+  return `${SUPABASE_URL}/storage/v1/object/public/${IMAGE_BUCKET}/${objectPath}`;
 }
 
 function gradeBand(students: any[]): string {
@@ -833,6 +942,91 @@ export default async function handler(req: any, res: any) {
       // DELETE /api/stories/:id/audio  -> clear narration
       if (seg[2] === "audio" && seg.length === 3 && method === "DELETE") {
         const updated = await storage.updateStoryAudio(id, "none", {});
+        return updated ? json(res, 200, updated) : json(res, 404, { error: "not found" });
+      }
+      // POST /api/stories/:id/comic  -> generate comic panels in BATCHES.
+      // Body: { from?: number, count?: number }. Panels are illustrated one per scene
+      // and appended to images_json. Returns { done, next_from, total, panels } so the
+      // client can loop until done (keeps each request well under the function timeout).
+      if (seg[2] === "comic" && seg.length === 3 && method === "POST") {
+        if (!OPENAI_API_KEY) {
+          return json(res, 503, {
+            error: "Comic generation isn't configured yet (missing OpenAI key).",
+            unavailable: true,
+          });
+        }
+        const story = await storage.getStory(id);
+        if (!story) return json(res, 404, { error: "not found" });
+        const beats: any[] = Array.isArray(story.beats) ? story.beats : [];
+        if (!beats.length) return json(res, 400, { error: "This story has no scenes to illustrate." });
+        const b = await readBody(req);
+        const from = Math.max(0, Number(b.from) || 0);
+        const batch = Math.min(Math.max(1, Number(b.count) || 3), 4);
+        try {
+          // grade band from the story's group students
+          const groups = await storage.listGroups();
+          const group = groups.find((g) => g.id === story.group_id);
+          const band = gradeBand(group?.members || []);
+
+          // existing panels (preserve across batches); fresh char sheet kept in images.cast
+          const existing: any = from === 0 ? {} : story.images || {};
+          let cast: string = existing.cast || "";
+          let panels: { beatId: string; url: string }[] = Array.isArray(existing.panels)
+            ? existing.panels.slice()
+            : [];
+          if (!cast) cast = await deriveCharacterSheet(story);
+
+          await storage.updateStoryImages(id, "generating", {
+            ...existing,
+            cast,
+            panels,
+            style: "classic-comic",
+            total: beats.length,
+          });
+
+          const end = Math.min(from + batch, beats.length);
+          const stamp = Date.now();
+          for (let i = from; i < end; i++) {
+            const beat = beats[i];
+            const png = await generateComicPanel(beat?.text || "", cast, band);
+            const objectPath = `story-${id}/panel-${i + 1}-${stamp}.png`;
+            const url = await uploadImage(objectPath, png);
+            // replace any existing panel for this beat, keep order by beat index later
+            panels = panels.filter((p) => p.beatId !== (beat?.id || `b${i + 1}`));
+            panels.push({ beatId: beat?.id || `b${i + 1}`, url });
+          }
+          // order panels by beat order
+          const order = new Map(beats.map((bt: any, i: number) => [bt.id || `b${i + 1}`, i]));
+          panels.sort((a, b2) => (order.get(a.beatId) ?? 0) - (order.get(b2.beatId) ?? 0));
+
+          const done = end >= beats.length;
+          const images = {
+            cast,
+            panels,
+            style: "classic-comic",
+            total: beats.length,
+            generated_at: new Date().toISOString(),
+          };
+          await storage.updateStoryImages(id, done ? "ready" : "generating", images);
+          return json(res, 200, {
+            done,
+            next_from: end,
+            total: beats.length,
+            completed: panels.length,
+            panels,
+            image_status: done ? "ready" : "generating",
+          });
+        } catch (e: any) {
+          await storage.updateStoryImages(id, "error", {
+            ...(story.images || {}),
+            error: String(e?.message || e),
+          });
+          return json(res, 502, { error: "Comic generation failed.", message: String(e?.message || e) });
+        }
+      }
+      // DELETE /api/stories/:id/comic  -> clear comic
+      if (seg[2] === "comic" && seg.length === 3 && method === "DELETE") {
+        const updated = await storage.updateStoryImages(id, "none", {});
         return updated ? json(res, 200, updated) : json(res, 404, { error: "not found" });
       }
     }

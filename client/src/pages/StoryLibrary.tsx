@@ -15,8 +15,11 @@ import {
   Volume2,
   Headphones,
   RefreshCw,
+  Images,
+  Loader2,
 } from "lucide-react";
-import type { Story, GroupWithMembers, Student } from "@shared/schema";
+import type { Story, GroupWithMembers, Student, ComicPanel } from "@shared/schema";
+import { useComic } from "@/lib/useComic";
 import { AppShell } from "@/components/AppShell";
 import { StudentChip } from "@/components/StudentChip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -249,6 +252,11 @@ export default function StoryLibrary() {
                               <Headphones className="h-3.5 w-3.5" /> narrated
                             </span>
                           ) : null}
+                          {s.image_status === "ready" && (s.images?.panels?.length ?? 0) > 0 ? (
+                            <span className="inline-flex items-center gap-1 text-primary">
+                              <Images className="h-3.5 w-3.5" /> comic
+                            </span>
+                          ) : null}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button
@@ -338,6 +346,8 @@ export function StoryPreviewDialog({
   onClose: () => void;
 }) {
   const studentById = new Map(students.map((s) => [s.id, s]));
+  const comic = useComic(story.id, story.images?.panels ?? []);
+  const panelByBeat = new Map(comic.panels.map((p) => [p.beatId, p]));
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -351,16 +361,29 @@ export function StoryPreviewDialog({
         </DialogHeader>
 
         <NarrationPanel story={story} />
+        <ComicPanelSection comic={comic} totalBeats={story.beats.length} />
 
         <div className="space-y-6">
           {story.beats.map((beat, idx) => {
             const stops = story.stop_points.filter((sp) => sp.afterBeatId === beat.id);
+            const panel = panelByBeat.get(beat.id);
             return (
               <div key={beat.id} data-testid={`preview-beat-${beat.id}`}>
                 <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-primary">
                   Scene {idx + 1}
                 </div>
-                <p className="text-sm leading-relaxed text-foreground">{beat.text}</p>
+                <div className="flex gap-3">
+                  {panel ? (
+                    <img
+                      src={panel.url}
+                      alt=""
+                      loading="lazy"
+                      className="h-24 w-24 flex-shrink-0 rounded-md border-2 border-border object-cover"
+                      data-testid={`preview-comic-${beat.id}`}
+                    />
+                  ) : null}
+                  <p className="text-sm leading-relaxed text-foreground">{beat.text}</p>
+                </div>
                 {stops.length > 0 && (
                   <div className="mt-3 space-y-2">
                     {stops.map((sp) => {
@@ -392,6 +415,72 @@ export function StoryPreviewDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// Comic generation control + status shown in the preview dialog. Panels appear
+// inline next to each scene; this panel handles generate/redraw + progress.
+function ComicPanelSection({
+  comic,
+  totalBeats,
+}: {
+  comic: ReturnType<typeof useComic>;
+  totalBeats: number;
+}) {
+  const { toast } = useToast();
+  const hasPanels = comic.panels.length > 0;
+
+  // useComic swallows errors into comic.error; surface them as a toast.
+  if (comic.error) {
+    const friendly = comic.error.startsWith("503")
+      ? "The OpenAI key isn't configured on the server yet."
+      : comic.error;
+    toast({ title: "Comic unavailable", description: friendly, variant: "destructive" });
+  }
+
+  const run = () => comic.generate();
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/30 p-3">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Images className="h-4 w-4 text-primary" />
+        Comic strip
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {comic.generating
+          ? `Drawing ${comic.progress?.completed ?? 0}/${comic.progress?.total ?? totalBeats}…`
+          : hasPanels
+            ? `${comic.panels.length} panels · classic comic style`
+            : "Illustrate every scene in classic comic-book style."}
+      </div>
+      <div className="ml-auto flex gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={run}
+          disabled={comic.generating}
+          data-testid="button-generate-comic"
+        >
+          {comic.generating ? (
+            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+          ) : (
+            <Images className="mr-1 h-4 w-4" />
+          )}
+          {hasPanels ? "Redraw" : "Generate comic"}
+        </Button>
+        {hasPanels && !comic.generating ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => comic.clear()}
+            data-testid="button-clear-comic"
+          >
+            <Trash2 className="mr-1 h-4 w-4" />
+            Clear
+          </Button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

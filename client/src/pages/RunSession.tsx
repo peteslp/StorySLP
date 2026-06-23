@@ -14,8 +14,10 @@ import {
   Play,
   Pause,
   Loader2,
+  Images,
 } from "lucide-react";
-import type { Story, Student, StopPoint } from "@shared/schema";
+import type { Story, Student, StopPoint, ComicPanel } from "@shared/schema";
+import { useComic } from "@/lib/useComic";
 import { StudentChip } from "@/components/StudentChip";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -142,6 +144,20 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
   const beats = story.beats;
   const totalBeats = beats.length;
 
+  // Comic strip: panels keyed by beat id, split into left/right rails.
+  const comic = useComic(story.id, story.images?.panels ?? []);
+  const panelByBeat = useMemo(() => {
+    const m = new Map<string, ComicPanel>();
+    comic.panels.forEach((p) => m.set(p.beatId, p));
+    return m;
+  }, [comic.panels]);
+  const orderedPanels = useMemo(
+    () => beats.map((b) => panelByBeat.get(b.id)).filter(Boolean) as ComicPanel[],
+    [beats, panelByBeat],
+  );
+  const leftPanels = orderedPanels.filter((_, i) => i % 2 === 0);
+  const rightPanels = orderedPanels.filter((_, i) => i % 2 === 1);
+
   // Build an ordered list of (beatIndex, stopPoint) so we can step through them.
   const steps = useMemo(() => {
     const out: { beatIndex: number; stop: StopPoint }[] = [];
@@ -236,6 +252,11 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
             </div>
           </div>
           <div className="flex items-center gap-1">
+            <ComicControl
+              comic={comic}
+              hasPanels={orderedPanels.length > 0}
+              totalBeats={totalBeats}
+            />
             <SessionNarration story={story} />
             <Link href="/stories">
               <Button variant="ghost" size="sm" data-testid="button-quit-session">
@@ -250,6 +271,22 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
           className="h-1 rounded-none"
         />
       </div>
+
+      {/* Comic rails in the side margins (wide screens only) */}
+      {orderedPanels.length > 0 && (
+        <>
+          <ComicRail
+            side="left"
+            panels={leftPanels}
+            activeBeatId={currentBeat?.id}
+          />
+          <ComicRail
+            side="right"
+            panels={rightPanels}
+            activeBeatId={currentBeat?.id}
+          />
+        </>
+      )}
 
       <div className="mx-auto max-w-3xl px-4 py-8">
         {atSummary ? (
@@ -405,6 +442,97 @@ function SessionNarration({ story }: { story: Story }) {
         data-testid="session-audio"
       />
     </>
+  );
+}
+
+// Top-bar button that triggers comic generation and shows live batch progress.
+function ComicControl({
+  comic,
+  hasPanels,
+  totalBeats,
+}: {
+  comic: ReturnType<typeof useComic>;
+  hasPanels: boolean;
+  totalBeats: number;
+}) {
+  const { toast } = useToast();
+
+  const run = async () => {
+    await comic.generate();
+  };
+
+  // Surface a friendly message if the key is missing (503) or another error.
+  if (comic.error) {
+    const friendly = comic.error.startsWith("503")
+      ? "The OpenAI key isn't configured on the server yet."
+      : comic.error;
+    toast({
+      title: "Comic unavailable",
+      description: friendly,
+      variant: "destructive",
+    });
+  }
+
+  if (comic.generating) {
+    const done = comic.progress?.completed ?? 0;
+    const total = comic.progress?.total ?? totalBeats;
+    return (
+      <Button variant="ghost" size="sm" disabled data-testid="button-session-comic">
+        <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+        {`Comic ${done}/${total}`}
+      </Button>
+    );
+  }
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={run}
+      data-testid="button-session-comic"
+    >
+      <Images className="mr-1 h-4 w-4" />
+      {hasPanels ? "Redraw" : "Comic"}
+    </Button>
+  );
+}
+
+// A fixed vertical strip of comic panels pinned to one side margin.
+// Center column is max-w-3xl (768px), so rails only have room on xl+ screens.
+function ComicRail({
+  side,
+  panels,
+  activeBeatId,
+}: {
+  side: "left" | "right";
+  panels: ComicPanel[];
+  activeBeatId?: string;
+}) {
+  if (panels.length === 0) return null;
+  return (
+    <div
+      className={`fixed ${side === "left" ? "left-4" : "right-4"} top-16 bottom-0 z-10 hidden w-44 flex-col gap-3 overflow-y-auto py-4 xl:flex`}
+      data-testid={`comic-rail-${side}`}
+      aria-hidden="true"
+    >
+      {panels.map((p) => {
+        const active = p.beatId === activeBeatId;
+        return (
+          <img
+            key={p.beatId}
+            src={p.url}
+            alt=""
+            loading="lazy"
+            className={`w-full rounded-lg border-2 bg-card object-cover shadow-sm transition-all ${
+              active
+                ? "border-primary ring-2 ring-primary/40 scale-[1.02]"
+                : "border-border opacity-80"
+            }`}
+            data-testid={`comic-panel-${p.beatId}`}
+          />
+        );
+      })}
+    </div>
   );
 }
 

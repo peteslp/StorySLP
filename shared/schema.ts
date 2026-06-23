@@ -67,7 +67,7 @@ export interface Story {
   audio_status: string;
   audio: StoryAudio;
   image_status: string;
-  images: Record<string, unknown>;
+  images: StoryImages;
 }
 
 export interface StoryAudio {
@@ -75,6 +75,20 @@ export interface StoryAudio {
   voice?: string;
   model?: string;
   chars?: number;
+  generated_at?: string;
+  error?: string;
+}
+
+export interface ComicPanel {
+  beatId: string;
+  url: string;
+}
+
+export interface StoryImages {
+  cast?: string;
+  panels?: ComicPanel[];
+  style?: string;
+  total?: number;
   generated_at?: string;
   error?: string;
 }
