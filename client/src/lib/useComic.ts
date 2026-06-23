@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type { ComicPanel } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -18,6 +18,23 @@ export function useComic(storyId: number, initialPanels: ComicPanel[] = []) {
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Keep local panels in sync with the stored comic from the server.
+  // `useState(initialPanels)` only reads on first mount, so without this a comic
+  // that loads (or refetches) AFTER mount would appear empty and tempt a regenerate.
+  // We only adopt stored panels when we're not mid-generation/clear, so an in-progress
+  // run is never clobbered. Comparing by joined URLs avoids needless re-renders.
+  const generatingRef = useRef(false);
+  generatingRef.current = generating;
+  const storedKey = initialPanels.map((p) => p.url).join("|");
+  useEffect(() => {
+    if (generatingRef.current) return;
+    setPanels((prev) => {
+      const prevKey = prev.map((p) => p.url).join("|");
+      return prevKey === storedKey ? prev : initialPanels;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storedKey]);
 
   const generate = useCallback(async () => {
     setGenerating(true);

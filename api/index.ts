@@ -641,6 +641,64 @@ function extractJson(s: string): string {
   return s.trim();
 }
 
+// Tops up under-served goals after generation so rotation targets are actually met.
+// FOCUS goals (priorityIds) target 3 stop-points; every other active goal targets 1.
+// Extra stop-points are cloned from an existing one for that goal (placed on a beat that
+// doesn't already have one, when possible) or synthesized minimally if none exists.
+function balanceStopPoints(
+  parsed: any,
+  ctx: {
+    priorityIds: Set<number>;
+    goalMeta: Map<number, { studentId: number; goalType: string; label: string }>;
+    beats: any[];
+  },
+): void {
+  const { priorityIds, goalMeta, beats } = ctx;
+  if (!beats.length) return;
+  const stops: any[] = parsed.stop_points;
+
+  const countFor = (goalId: number) => stops.filter((s) => s.goalId === goalId).length;
+  const beatsUsedBy = (goalId: number) =>
+    new Set(stops.filter((s) => s.goalId === goalId).map((s) => s.afterBeatId));
+  let nextIdNum =
+    stops.reduce((max, s) => {
+      const n = Number(String(s.id || "").replace(/^s/, ""));
+      return Number.isFinite(n) && n > max ? n : max;
+    }, stops.length) + 1;
+
+  for (const [goalId, meta] of goalMeta) {
+    const target = priorityIds.has(goalId) ? 3 : 1;
+    let have = countFor(goalId);
+    if (have >= target) continue;
+
+    const template = stops.find((s) => s.goalId === goalId);
+    while (have < target) {
+      // Prefer a beat this goal isn't already on, to spread practice across the story.
+      const used = beatsUsedBy(goalId);
+      const freeBeat = beats.find((b) => !used.has(b.id)) || beats[have % beats.length];
+      const clone = template
+        ? { ...template }
+        : {
+            goalId,
+            studentId: meta.studentId,
+            goalType: meta.goalType,
+            question: `Practice the target for "${meta.label}" using a moment from this scene.`,
+            targetResponse: `Student demonstrates the "${meta.label}" goal at the expected level.`,
+            teachingNote: "Cue the target and give one example before the student responds.",
+            responseType: "open",
+          };
+      clone.id = `s${nextIdNum++}`;
+      clone.afterBeatId = freeBeat?.id || beats[0].id;
+      stops.push(clone);
+      have++;
+    }
+  }
+
+  // Keep stop-points ordered by their beat position for a clean read-through.
+  const order = new Map(beats.map((b: any, i: number) => [b.id, i]));
+  stops.sort((a, b) => (order.get(a.afterBeatId) ?? 0) - (order.get(b.afterBeatId) ?? 0));
+}
+
 async function generateStory(
   members: { student: any; goals: any[] }[],
   opts: { theme?: string; history?: Map<number, { total_trials: number; last_session_date: string | null }> } = {},
@@ -653,6 +711,14 @@ async function generateStory(
   const band = gradeBand(students);
   const history = opts.history ?? new Map();
   const allGoalIds: number[] = [];
+
+  // Lookup for the post-generation balancing pass: goalId -> {studentId, goalType, label}.
+  const goalMeta = new Map<number, { studentId: number; goalType: string; label: string }>();
+  for (const m of withGoals) {
+    for (const g of m.goals) {
+      goalMeta.set(g.id, { studentId: m.student.id, goalType: g.goal_type, label: g.label });
+    }
+  }
 
   // Rank every active goal by how "due" it is for practice.
   // Goals never practiced are most due; otherwise older last-practiced + fewer trials = more due.
@@ -713,9 +779,9 @@ ${goalLines}
 GOAL ROTATION — each goal above is tagged [FOCUS ...] or [light ...] based on how recently it was
 practiced in past sessions. FOCUS goals are the least-recently-practiced (or never practiced) and need
 the most repetition THIS session. "light" goals were practiced more recently and only need brief review.
-- FOCUS goals: give at least THREE stop-points each, spread across the story for repeated practice.
-- light goals: give at least ONE stop-point each, so they are still touched but not over-emphasized.
-Every active goal must appear at least once. Prioritize FOCUS goals when distributing stop-points.
+- FOCUS goals: give EXACTLY THREE stop-points each (not two) — this is a hard requirement, spread across different beats for repeated practice.
+- light goals: give EXACTLY ONE stop-point each, so they are still touched but not over-emphasized.
+Before returning, COUNT your stop-points per goalId and confirm every FOCUS goal has 3 and every light goal has 1. Every active goal must appear. Do not under-serve any FOCUS goal.
 
 ${theme}
 
@@ -781,6 +847,13 @@ Return ONLY valid JSON with this exact shape:
     afterBeatId: beatIds.has(s.afterBeatId) ? s.afterBeatId : parsed.beats[0]?.id,
     responseType: s.responseType === "choice" ? "choice" : "open",
   }));
+
+  // --- Light balancing pass: enforce rotation targets the model may have under-served. ---
+  // FOCUS goals want 3 stop-points, light/other goals want >=1. If the model fell short,
+  // top up by cloning an existing stop-point for that goal onto a different beat (so the
+  // student still gets the extra rep), or synthesizing a minimal one if none exists yet.
+  balanceStopPoints(parsed, { priorityIds, goalMeta, beats: parsed.beats });
+
   parsed.target_goal_ids = Array.from(
     new Set(parsed.stop_points.map((s: any) => s.goalId).filter(Boolean)),
   );
