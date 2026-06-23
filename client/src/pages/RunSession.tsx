@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
@@ -10,6 +10,10 @@ import {
   Save,
   PartyPopper,
   CheckCircle2,
+  Volume2,
+  Play,
+  Pause,
+  Loader2,
 } from "lucide-react";
 import type { Story, Student, StopPoint } from "@shared/schema";
 import { StudentChip } from "@/components/StudentChip";
@@ -231,12 +235,15 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
               {atSummary ? "Summary" : `Scene ${progressBeat} of ${totalBeats}`}
             </div>
           </div>
-          <Link href="/stories">
-            <Button variant="ghost" size="sm" data-testid="button-quit-session">
-              <X className="mr-1 h-4 w-4" />
-              Quit
-            </Button>
-          </Link>
+          <div className="flex items-center gap-1">
+            <SessionNarration story={story} />
+            <Link href="/stories">
+              <Button variant="ghost" size="sm" data-testid="button-quit-session">
+                <X className="mr-1 h-4 w-4" />
+                Quit
+              </Button>
+            </Link>
+          </div>
         </div>
         <Progress
           value={atSummary ? 100 : (progressBeat / Math.max(totalBeats, 1)) * 100}
@@ -310,6 +317,94 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
         )}
       </div>
     </div>
+  );
+}
+
+// Compact narration control for the session top bar.
+// If audio exists, shows play/pause. Otherwise a one-tap "Narrate" button that
+// generates HD voice on the fly, then auto-plays.
+function SessionNarration({ story }: { story: Story }) {
+  const { toast } = useToast();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [localUrl, setLocalUrl] = useState<string | undefined>(
+    story.audio_status === "ready" ? story.audio?.url : undefined,
+  );
+
+  const generate = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/stories/${story.id}/audio`, {});
+      return (await res.json()) as Story;
+    },
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/stories"] });
+      const url = updated.audio?.url;
+      if (url) {
+        setLocalUrl(url);
+        // wait a tick for the <audio> src to mount, then play
+        setTimeout(() => audioRef.current?.play().catch(() => {}), 50);
+      }
+    },
+    onError: (e: Error) => {
+      if (e.message.startsWith("503")) {
+        toast({
+          title: "Narration unavailable",
+          description: "The OpenAI key isn't configured on the server yet.",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Could not generate narration", description: e.message, variant: "destructive" });
+      }
+    },
+  });
+
+  const toggle = () => {
+    const el = audioRef.current;
+    if (!el) return;
+    if (el.paused) el.play().catch(() => {});
+    else el.pause();
+  };
+
+  if (!localUrl) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => generate.mutate()}
+        disabled={generate.isPending}
+        data-testid="button-session-narrate"
+      >
+        {generate.isPending ? (
+          <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+        ) : (
+          <Volume2 className="mr-1 h-4 w-4" />
+        )}
+        {generate.isPending ? "Preparing…" : "Narrate"}
+      </Button>
+    );
+  }
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={toggle}
+        data-testid="button-session-play"
+      >
+        {playing ? <Pause className="mr-1 h-4 w-4" /> : <Play className="mr-1 h-4 w-4" />}
+        {playing ? "Pause" : "Narrate"}
+      </Button>
+      <audio
+        ref={audioRef}
+        src={localUrl}
+        preload="none"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        data-testid="session-audio"
+      />
+    </>
   );
 }
 
