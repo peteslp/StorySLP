@@ -9,10 +9,30 @@ import {
   Moon,
   Sun,
   Menu,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
+import { setToken } from "@/lib/queryClient";
+
+function LogoutButton() {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => {
+        setToken(null);
+        window.location.reload();
+      }}
+      data-testid="button-logout"
+      className="w-full justify-start gap-3 text-foreground/80"
+    >
+      <LogOut className="h-5 w-5" />
+      <span>Log out</span>
+    </Button>
+  );
+}
 
 const NAV = [
   { href: "/", label: "Today", icon: CalendarCheck, testid: "link-nav-today" },
@@ -145,8 +165,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="flex-1 overflow-y-auto px-3">
           <NavLinks />
         </div>
-        <div className="border-t p-3">
+        <div className="border-t p-3 space-y-1">
           <DarkModeToggle />
+          <LogoutButton />
         </div>
       </aside>
 
@@ -167,8 +188,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="flex-1 px-3">
               <NavLinks onNavigate={() => setMobileOpen(false)} />
             </div>
-            <div className="mt-4 border-t p-3">
+            <div className="mt-4 border-t p-3 space-y-1">
               <DarkModeToggle />
+              <LogoutButton />
             </div>
           </SheetContent>
         </Sheet>

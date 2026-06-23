@@ -1,7 +1,9 @@
 // Vercel serverless API for StorySLP — fully self-contained (no relative imports, no Express).
 // Mirrors server/routes.ts + server/storage.ts. Talks to Supabase REST directly.
-// Story generation requires LLM credentials only available in the authoring sandbox,
-// so on the live site /api/stories/generate returns 503 (graceful "unavailable").
+// Auth: single shared password (APP_PASSWORD) -> signed bearer token. All /api routes
+// except /login, /me, /health require a valid token.
+// Story generation uses OPENAI_API_KEY when present (live on the site); 503 otherwise.
+import crypto from "node:crypto";
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL || "https://jdqdyomxtpzyqiisepfj.supabase.co";
@@ -34,6 +36,55 @@ async function sb<T>(path: string, init?: any): Promise<T> {
 }
 
 const repr = { Prefer: "return=representation" };
+
+// ---------------- Auth ----------------
+const APP_PASSWORD = process.env.APP_PASSWORD || "";
+const AUTH_SECRET =
+  process.env.AUTH_SECRET || process.env.APP_PASSWORD || "storyslp-dev-secret";
+
+// Token = base64(payload).base64(hmac). Payload carries an issued-at so we can expire.
+const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+function signToken(): string {
+  const payload = JSON.stringify({ iat: Date.now() });
+  const p = Buffer.from(payload).toString("base64url");
+  const sig = crypto.createHmac("sha256", AUTH_SECRET).update(p).digest("base64url");
+  return `${p}.${sig}`;
+}
+
+function verifyToken(token: string | null | undefined): boolean {
+  if (!token) return false;
+  const parts = token.split(".");
+  if (parts.length !== 2) return false;
+  const [p, sig] = parts;
+  const expected = crypto.createHmac("sha256", AUTH_SECRET).update(p).digest("base64url");
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
+  } catch {
+    return false;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(p, "base64url").toString());
+    if (typeof payload.iat !== "number") return false;
+    if (Date.now() - payload.iat > TOKEN_TTL_MS) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function bearer(req: any): string | null {
+  const h = req.headers?.authorization || req.headers?.Authorization || "";
+  const m = String(h).match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : null;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
 
 const PALETTE = [
   "#0d9488", "#6366f1", "#d97706", "#db2777", "#0891b2",
@@ -346,6 +397,148 @@ const storage = {
   },
 };
 
+// ---------------- Story generation (OpenAI) ----------------
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
+
+function gradeBand(students: any[]): string {
+  const grades = students
+    .map((s) => parseInt(String(s.grade || "").replace(/\D/g, ""), 10))
+    .filter((n) => !isNaN(n));
+  if (!grades.length) return "elementary (grades K-5)";
+  return `grades ${Math.min(...grades)}-${Math.max(...grades)}`;
+}
+
+function extractJson(s: string): string {
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) return fence[1].trim();
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  if (start >= 0 && end > start) return s.slice(start, end + 1);
+  return s.trim();
+}
+
+async function generateStory(
+  members: { student: any; goals: any[] }[],
+  opts: { theme?: string } = {},
+): Promise<any> {
+  const withGoals = members.filter((m) => m.goals.length > 0);
+  if (withGoals.length === 0) {
+    throw new Error("No active goals found for this group's students.");
+  }
+  const students = withGoals.map((m) => m.student);
+  const band = gradeBand(students);
+  const allGoalIds: number[] = [];
+  const goalLines = withGoals
+    .map((m) => {
+      const lines = m.goals
+        .map((g) => {
+          allGoalIds.push(g.id);
+          return `    - goalId ${g.id} [${g.goal_type}] "${g.label}": ${g.text} (target: ${g.target_criteria})`;
+        })
+        .join("\n");
+      return `  Student "${m.student.name}" (studentId ${m.student.id}, grade ${m.student.grade ?? "?"}):\n${lines}`;
+    })
+    .join("\n");
+  const theme = opts.theme?.trim()
+    ? `The story theme/setting should be: ${opts.theme.trim()}.`
+    : `Pick an engaging, age-appropriate adventure theme.`;
+
+  const prompt = `You are an expert speech-language pathologist and children's story author.
+Write ONE cohesive interactive therapy story for a small group, suitable for ${band}.
+The story is read aloud scene-by-scene. After certain scenes, the clinician pauses at a
+"stop-point" to work on ONE specific student's IEP goal using the story content.
+
+THE STUDENTS AND THEIR ACTIVE GOALS:
+${goalLines}
+
+${theme}
+
+REQUIREMENTS:
+- 5 to 7 ordered "beats" (scenes). Each beat is 2-4 sentences of engaging narrative that flows into the next.
+- FERPA / privacy: the story's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names.
+- Create at least ONE stop-point per goalId listed. Distribute stop-points across the beats; multiple stop-points may follow the same beat.
+- Each stop-point MUST reference concrete words, phrases, or events from the beat it follows (afterBeatId).
+- Tailor each stop-point to its goal type:
+    * vocab/context clues: ask the student to infer a word's meaning using sentence context.
+    * artic_s / artic_th / articulation: give a sentence to read aloud loaded with the target sound; targetResponse notes which words to score.
+    * main_idea: read a complex/embedded sentence, ask for the main idea in simple words.
+    * restate_active: read a passive-voice sentence, ask them to restate in active voice (who did what).
+    * figurative: point to a simile/metaphor/hyperbole in the text and ask what it really means.
+- responseType is "open" for most; use "choice" with a "choices" array (3 options) where a multiple-choice check fits.
+- Each stop-point includes: question (to the student), targetResponse (for the clinician), teachingNote (a quick scaffold).
+
+Return ONLY valid JSON with this exact shape:
+{
+  "title": "string",
+  "est_minutes": 15,
+  "beats": [{"id":"b1","text":"..."}],
+  "stop_points": [
+    {"id":"s1","afterBeatId":"b1","studentId":0,"goalId":0,"goalType":"<type>","question":"...","targetResponse":"...","teachingNote":"...","responseType":"open"}
+  ]
+}`;
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
+      temperature: 0.8,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OpenAI ${res.status}: ${body}`);
+  }
+  const data: any = await res.json();
+  const raw = data?.choices?.[0]?.message?.content || "";
+  const parsed = JSON.parse(extractJson(raw));
+
+  parsed.est_minutes = parsed.est_minutes || 15;
+  parsed.beats = (parsed.beats || []).map((b: any, i: number) => ({
+    id: b.id || `b${i + 1}`,
+    text: b.text,
+  }));
+  const beatIds = new Set(parsed.beats.map((b: any) => b.id));
+  parsed.stop_points = (parsed.stop_points || []).map((s: any, i: number) => ({
+    ...s,
+    id: s.id || `s${i + 1}`,
+    afterBeatId: beatIds.has(s.afterBeatId) ? s.afterBeatId : parsed.beats[0]?.id,
+    responseType: s.responseType === "choice" ? "choice" : "open",
+  }));
+  parsed.target_goal_ids = Array.from(
+    new Set(parsed.stop_points.map((s: any) => s.goalId).filter(Boolean)),
+  );
+  if (parsed.target_goal_ids.length === 0) parsed.target_goal_ids = allGoalIds;
+  return parsed;
+}
+
+async function generateForGroup(groupId: number, theme?: string) {
+  const groups = await storage.listGroups();
+  const group = groups.find((g) => g.id === groupId);
+  if (!group) throw new Error("Group not found.");
+  const members: { student: any; goals: any[] }[] = [];
+  for (const s of group.members) {
+    const goals = await storage.listGoals(s.id);
+    members.push({ student: s, goals: goals.filter((g: any) => g.active) });
+  }
+  const gen = await generateStory(members, { theme });
+  return storage.createStory({
+    group_id: groupId,
+    title: gen.title,
+    status: "draft",
+    est_minutes: gen.est_minutes,
+    beats: gen.beats,
+    stop_points: gen.stop_points,
+    target_goal_ids: gen.target_goal_ids,
+  });
+}
+
 function json(res: any, status: number, body: any) {
   res.status(status).setHeader("Content-Type", "application/json");
   res.end(JSON.stringify(body));
@@ -382,8 +575,32 @@ export default async function handler(req: any, res: any) {
   const seg = path.split("/").filter(Boolean); // e.g. ["students","1","goals"]
 
   try {
-    // ---- health ----
+    // ---- health (public) ----
     if (path === "/health") return json(res, 200, { ok: true });
+
+    // ---- login (public) ----
+    if (path === "/login" && method === "POST") {
+      const b = await readBody(req);
+      if (!APP_PASSWORD) {
+        return json(res, 500, { error: "Server is missing APP_PASSWORD configuration." });
+      }
+      if (typeof b.password === "string" && safeEqual(b.password, APP_PASSWORD)) {
+        return json(res, 200, { token: signToken() });
+      }
+      return json(res, 401, { error: "Incorrect password." });
+    }
+
+    // ---- token check (public; used by the app on load) ----
+    if (path === "/me" && method === "GET") {
+      return verifyToken(bearer(req))
+        ? json(res, 200, { ok: true })
+        : json(res, 401, { error: "unauthorized" });
+    }
+
+    // ---- everything below requires a valid token ----
+    if (!verifyToken(bearer(req))) {
+      return json(res, 401, { error: "unauthorized" });
+    }
 
     // ---- /students ... ----
     if (seg[0] === "students") {
@@ -473,12 +690,22 @@ export default async function handler(req: any, res: any) {
         return json(res, 200, await storage.createStory(b));
       }
       if (seg[1] === "generate" && method === "POST") {
-        // Story generation requires LLM credentials only present in the authoring sandbox.
-        return json(res, 503, {
-          error:
-            "Story generation runs in the authoring environment and is not available on the live site. Generate new stories there, then they appear here for everyone.",
-          unavailable: true,
-        });
+        if (!OPENAI_API_KEY) {
+          return json(res, 503, {
+            error: "Story generation isn't configured yet (missing OpenAI key).",
+            unavailable: true,
+          });
+        }
+        const b = await readBody(req);
+        if (!b.group_id) return json(res, 400, { error: "group_id required" });
+        try {
+          const story = await generateForGroup(Number(b.group_id), b.theme);
+          return json(res, 200, story);
+        } catch (e: any) {
+          const msg = String(e?.message || e);
+          if (/No active goals/i.test(msg)) return json(res, 400, { error: msg });
+          return json(res, 502, { error: "Generation failed.", message: msg });
+        }
       }
       const id = Number(seg[1]);
       if (seg.length === 2 && method === "GET") {
