@@ -6,6 +6,7 @@ import {
   Pencil,
   Trash2,
   Target,
+  TrendingUp,
 } from "lucide-react";
 import type { Student, Goal, GroupWithMembers } from "@shared/schema";
 import { AppShell } from "@/components/AppShell";
@@ -46,7 +47,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { PRESET_COLORS, goalTypeLabel, contrastText } from "@/lib/storyslp";
+import { PRESET_COLORS, goalTypeLabel, contrastText, getJSON, formatDate } from "@/lib/storyslp";
 
 const GOAL_TYPES = [
   "vocab",
@@ -75,6 +76,7 @@ export default function Students() {
   const [color, setColor] = useState(PRESET_COLORS[0]);
 
   const [goalsFor, setGoalsFor] = useState<Student | null>(null);
+  const [progressFor, setProgressFor] = useState<Student | null>(null);
   const [deleteStudent, setDeleteStudent] = useState<Student | null>(null);
 
   const openCreate = () => {
@@ -199,16 +201,28 @@ export default function Students() {
                     )}
                   </div>
 
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => setGoalsFor(s)}
-                    data-testid={`button-manage-goals-${s.id}`}
-                  >
-                    <Target className="mr-1 h-4 w-4" />
-                    Manage goals
-                  </Button>
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => setGoalsFor(s)}
+                      data-testid={`button-manage-goals-${s.id}`}
+                    >
+                      <Target className="mr-1 h-4 w-4" />
+                      Manage goals
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => setProgressFor(s)}
+                      data-testid={`button-view-progress-${s.id}`}
+                    >
+                      <TrendingUp className="mr-1 h-4 w-4" />
+                      View progress
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             );
@@ -295,6 +309,10 @@ export default function Students() {
       {/* Goal manager */}
       {goalsFor && (
         <GoalManager student={goalsFor} onClose={() => setGoalsFor(null)} />
+      )}
+
+      {progressFor && (
+        <StudentProgress student={progressFor} onClose={() => setProgressFor(null)} />
       )}
 
       {/* Delete confirm */}
@@ -583,6 +601,192 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </Dialog>
+  );
+}
+
+type ProgressSession = {
+  session_id: number;
+  date: string;
+  story_title: string | null;
+  trials: number;
+  correct: number;
+  prompted: number;
+  accuracy: number | null;
+};
+
+type ProgressGoal = {
+  goal_id: number;
+  label: string;
+  goal_type: string;
+  target_criteria: string;
+  active: boolean;
+  sessions: ProgressSession[];
+  session_count: number;
+  total_trials: number;
+  total_correct: number;
+  total_prompted: number;
+  overall_accuracy: number | null;
+};
+
+function accuracyTone(pct: number): string {
+  if (pct >= 80) return "text-emerald-600 dark:text-emerald-400";
+  if (pct >= 60) return "text-amber-600 dark:text-amber-400";
+  return "text-destructive";
+}
+
+function Sparkbars({ sessions }: { sessions: ProgressSession[] }) {
+  if (sessions.length === 0) return null;
+  return (
+    <div className="flex items-end gap-1 h-12" data-testid="sparkbars">
+      {sessions.map((s) => (
+        <div
+          key={s.session_id}
+          className="flex-1 min-w-[6px] rounded-sm bg-primary/80"
+          style={{ height: `${Math.max(4, s.accuracy ?? 0)}%` }}
+          title={`${formatDate(s.date)}: ${s.accuracy ?? 0}%`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function StudentProgress({
+  student,
+  onClose,
+}: {
+  student: Student;
+  onClose: () => void;
+}) {
+  const progressQ = useQuery<{ goals: ProgressGoal[] }>({
+    queryKey: ["/api/students", student.id, "progress"],
+    queryFn: () =>
+      getJSON<{ goals: ProgressGoal[] }>(`/api/students/${student.id}/progress`),
+  });
+
+  const goals = progressQ.data?.goals ?? [];
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        className="max-w-2xl max-h-[88vh] overflow-y-auto"
+        data-testid="dialog-student-progress"
+      >
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <TrendingUp className="h-5 w-5 text-primary" />
+            {student.name} — goal progress
+          </DialogTitle>
+          <DialogDescription>
+            Accuracy per session and overall average for each goal.
+          </DialogDescription>
+        </DialogHeader>
+
+        {progressQ.isLoading ? (
+          <div className="space-y-4">
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-24 w-full" />
+          </div>
+        ) : goals.length === 0 ? (
+          <p
+            className="py-8 text-center text-sm text-muted-foreground"
+            data-testid="text-no-goals"
+          >
+            No goals yet for this student.
+          </p>
+        ) : (
+          <div className="space-y-6">
+            {goals.map((g) => (
+              <Card key={g.goal_id} data-testid={`card-progress-goal-${g.goal_id}`}>
+                <CardContent className="p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {goalTypeLabel(g.goal_type)}
+                      </span>
+                      <p className="truncate font-medium">{g.label}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Target {g.target_criteria}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p
+                        className="text-3xl font-bold text-primary leading-none"
+                        data-testid={`text-overall-${g.goal_id}`}
+                      >
+                        {g.session_count > 0 ? `${g.overall_accuracy}%` : "—"}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {g.total_correct}/{g.total_trials} trials ·{" "}
+                        {g.session_count} session{g.session_count === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {g.sessions.length === 0 ? (
+                    <p
+                      className="mt-4 text-sm text-muted-foreground"
+                      data-testid={`text-no-sessions-${g.goal_id}`}
+                    >
+                      No sessions logged yet.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="mt-4">
+                        <Sparkbars sessions={g.sessions} />
+                      </div>
+                      <div className="mt-3 overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-left font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                              <th className="py-1 pr-2">Session</th>
+                              <th className="py-1 pr-2">Story</th>
+                              <th className="py-1 pr-2 text-right">Trials</th>
+                              <th className="py-1 pr-2 text-right">Correct</th>
+                              <th className="py-1 pr-2 text-right">Prompted</th>
+                              <th className="py-1 text-right">Accuracy</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {g.sessions.map((s) => (
+                              <tr
+                                key={s.session_id}
+                                className="border-t border-border"
+                                data-testid={`row-session-${g.goal_id}-${s.session_id}`}
+                              >
+                                <td className="py-1.5 pr-2 whitespace-nowrap">
+                                  {formatDate(s.date)}
+                                </td>
+                                <td className="py-1.5 pr-2 max-w-[140px] truncate">
+                                  {s.story_title ?? "—"}
+                                </td>
+                                <td className="py-1.5 pr-2 text-right tabular-nums">
+                                  {s.trials}
+                                </td>
+                                <td className="py-1.5 pr-2 text-right tabular-nums">
+                                  {s.correct}
+                                </td>
+                                <td className="py-1.5 pr-2 text-right tabular-nums">
+                                  {s.prompted}
+                                </td>
+                                <td
+                                  className={`py-1.5 text-right font-medium tabular-nums ${accuracyTone(s.accuracy ?? 0)}`}
+                                >
+                                  {s.accuracy ?? 0}%
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </DialogContent>
     </Dialog>
   );
 }

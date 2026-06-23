@@ -433,6 +433,71 @@ const storage = {
     }
     return out;
   },
+
+  // ---------- Per-student goal progress over time ----------
+  // For each of the student's goals: every session it was practiced (date, story,
+  // trials/correct/prompted, accuracy %) plus an overall average accuracy across sessions.
+  async studentProgress(studentId: number) {
+    const goals = await sb<any[]>(`/goals?student_id=eq.${studentId}&order=id.asc`);
+    if (goals.length === 0) return { goals: [] };
+    const logs = await sb<any[]>(`/goal_logs?student_id=eq.${studentId}&order=id.asc`);
+    const sessionIds = Array.from(new Set(logs.map((l) => l.session_id)));
+    let sessions: any[] = [];
+    if (sessionIds.length) {
+      sessions = await sb<any[]>(`/sessions?id=in.(${sessionIds.join(",")})`);
+    }
+    const storyIds = Array.from(new Set(sessions.map((s) => s.story_id).filter(Boolean)));
+    let stories: any[] = [];
+    if (storyIds.length) {
+      stories = await sb<any[]>(`/stories?id=in.(${storyIds.join(",")})&select=id,title`);
+    }
+    const sessionById = new Map(sessions.map((s) => [s.id, s]));
+    const storyTitle = new Map(stories.map((s) => [s.id, s.title]));
+
+    const goalsOut = goals.map((g) => {
+      const gLogs = logs
+        .filter((l) => l.goal_id === g.id)
+        .map((l) => {
+          const sess = sessionById.get(l.session_id);
+          const trials = l.trials ?? 0;
+          const correct = l.correct ?? 0;
+          return {
+            session_id: l.session_id,
+            date: sess?.date ?? null,
+            story_title: sess ? storyTitle.get(sess.story_id) ?? null : null,
+            trials,
+            correct,
+            prompted: l.prompted ?? 0,
+            accuracy: trials > 0 ? Math.round((correct / trials) * 100) : null,
+          };
+        })
+        // chronological by session date (fallback to session id)
+        .sort((a, b) => {
+          const da = a.date ?? "";
+          const db = b.date ?? "";
+          if (da !== db) return da < db ? -1 : 1;
+          return a.session_id - b.session_id;
+        });
+      const totalTrials = gLogs.reduce((acc, s) => acc + s.trials, 0);
+      const totalCorrect = gLogs.reduce((acc, s) => acc + s.correct, 0);
+      const totalPrompted = gLogs.reduce((acc, s) => acc + s.prompted, 0);
+      return {
+        goal_id: g.id,
+        label: g.label,
+        goal_type: g.goal_type,
+        target_criteria: g.target_criteria,
+        active: g.active,
+        sessions: gLogs,
+        session_count: gLogs.length,
+        total_trials: totalTrials,
+        total_correct: totalCorrect,
+        total_prompted: totalPrompted,
+        // Overall accuracy = correct / trials across every session for this goal.
+        overall_accuracy: totalTrials > 0 ? Math.round((totalCorrect / totalTrials) * 100) : null,
+      };
+    });
+    return { goals: goalsOut };
+  },
 };
 
 // ---------------- Story generation (OpenAI) ----------------
@@ -964,6 +1029,8 @@ export default async function handler(req: any, res: any) {
         return json(res, 200, { ok: true });
       }
       if (seg[2] === "goals" && method === "GET") return json(res, 200, await storage.listGoals(id));
+      if (seg[2] === "progress" && method === "GET")
+        return json(res, 200, await storage.studentProgress(id));
       if (seg[2] === "groups" && method === "GET")
         return json(res, 200, await storage.groupsForStudent(id));
       if (seg[2] === "move" && method === "POST") {
