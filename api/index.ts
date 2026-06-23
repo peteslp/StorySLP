@@ -411,6 +411,28 @@ const storage = {
       };
     });
   },
+
+  // ---------- Goal practice history (for rotation) ----------
+  // Returns a map: goalId -> { total_trials, last_session_date }
+  // Used to emphasize least-recently-practiced goals when generating a new story.
+  async goalHistory(groupId: number): Promise<Map<number, { total_trials: number; last_session_date: string | null }>> {
+    const sessions = await sb<any[]>(`/sessions?group_id=eq.${groupId}`);
+    const sessionIds = sessions.map((s) => s.id);
+    const out = new Map<number, { total_trials: number; last_session_date: string | null }>();
+    if (sessionIds.length === 0) return out;
+    const logs = await sb<any[]>(`/goal_logs?session_id=in.(${sessionIds.join(",")})`);
+    const sessionDate = new Map(sessions.map((s) => [s.id, s.date]));
+    for (const l of logs) {
+      const prev = out.get(l.goal_id) ?? { total_trials: 0, last_session_date: null };
+      prev.total_trials += l.trials ?? 0;
+      const d = sessionDate.get(l.session_id) as string | undefined;
+      if (d && (!prev.last_session_date || d > prev.last_session_date)) {
+        prev.last_session_date = d;
+      }
+      out.set(l.goal_id, prev);
+    }
+    return out;
+  },
 };
 
 // ---------------- Story generation (OpenAI) ----------------
@@ -621,7 +643,7 @@ function extractJson(s: string): string {
 
 async function generateStory(
   members: { student: any; goals: any[] }[],
-  opts: { theme?: string } = {},
+  opts: { theme?: string; history?: Map<number, { total_trials: number; last_session_date: string | null }> } = {},
 ): Promise<any> {
   const withGoals = members.filter((m) => m.goals.length > 0);
   if (withGoals.length === 0) {
@@ -629,13 +651,48 @@ async function generateStory(
   }
   const students = withGoals.map((m) => m.student);
   const band = gradeBand(students);
+  const history = opts.history ?? new Map();
   const allGoalIds: number[] = [];
+
+  // Rank every active goal by how "due" it is for practice.
+  // Goals never practiced are most due; otherwise older last-practiced + fewer trials = more due.
+  const flatGoals = withGoals.flatMap((m) =>
+    m.goals.map((g) => {
+      const h = history.get(g.id);
+      return {
+        id: g.id,
+        total_trials: h?.total_trials ?? 0,
+        last_session_date: h?.last_session_date ?? null,
+      };
+    }),
+  );
+  // Sort least-recently-practiced first: never-practiced (null date) lead, then oldest date,
+  // then fewest total trials as a tiebreaker.
+  const ranked = [...flatGoals].sort((a, b) => {
+    if (a.last_session_date === null && b.last_session_date !== null) return -1;
+    if (b.last_session_date === null && a.last_session_date !== null) return 1;
+    if (a.last_session_date && b.last_session_date && a.last_session_date !== b.last_session_date) {
+      return a.last_session_date < b.last_session_date ? -1 : 1; // older date first
+    }
+    return a.total_trials - b.total_trials; // fewer trials first
+  });
+  // The most-due half (at least 1) get heavy emphasis this session; the rest are touched lightly.
+  const priorityCount = Math.max(1, Math.ceil(ranked.length / 2));
+  const priorityIds = new Set(ranked.slice(0, priorityCount).map((g) => g.id));
+
+  const statusFor = (goalId: number): string => {
+    const h = history.get(goalId);
+    const focus = priorityIds.has(goalId) ? "FOCUS" : "light";
+    if (!h || h.total_trials === 0) return `${focus}; never practiced yet`;
+    return `${focus}; ${h.total_trials} trials so far, last practiced ${h.last_session_date ?? "unknown"}`;
+  };
+
   const goalLines = withGoals
     .map((m) => {
       const lines = m.goals
         .map((g) => {
           allGoalIds.push(g.id);
-          return `    - goalId ${g.id} [${g.goal_type}] "${g.label}": ${g.text} (target: ${g.target_criteria})`;
+          return `    - goalId ${g.id} [${g.goal_type}] "${g.label}": ${g.text} (target: ${g.target_criteria}) [${statusFor(g.id)}]`;
         })
         .join("\n");
       return `  Student "${m.student.name}" (studentId ${m.student.id}, grade ${m.student.grade ?? "?"}):\n${lines}`;
@@ -653,6 +710,13 @@ The story is read aloud scene-by-scene. After certain scenes, the clinician paus
 THE STUDENTS AND THEIR ACTIVE GOALS:
 ${goalLines}
 
+GOAL ROTATION — each goal above is tagged [FOCUS ...] or [light ...] based on how recently it was
+practiced in past sessions. FOCUS goals are the least-recently-practiced (or never practiced) and need
+the most repetition THIS session. "light" goals were practiced more recently and only need brief review.
+- FOCUS goals: give at least THREE stop-points each, spread across the story for repeated practice.
+- light goals: give at least ONE stop-point each, so they are still touched but not over-emphasized.
+Every active goal must appear at least once. Prioritize FOCUS goals when distributing stop-points.
+
 ${theme}
 
 LENGTH TARGET — IMPORTANT:
@@ -662,7 +726,7 @@ LENGTH TARGET — IMPORTANT:
 
 REQUIREMENTS:
 - FERPA / privacy: the story's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names.
-- Create at LEAST TWO stop-points per goalId listed (more is fine), so each student gets repeated practice across the longer story. Distribute stop-points across the beats; multiple stop-points may follow the same beat.
+- Follow the GOAL ROTATION rule above for how many stop-points each goal gets (FOCUS goals ≥ 3, light goals ≥ 1). Distribute stop-points across the beats; multiple stop-points may follow the same beat.
 - Each stop-point MUST reference concrete words, phrases, or events from the beat it follows (afterBeatId).
 - Tailor each stop-point to its goal type:
     * vocab/context clues: ask the student to infer a word's meaning using sentence context.
@@ -733,7 +797,8 @@ async function generateForGroup(groupId: number, theme?: string) {
     const goals = await storage.listGoals(s.id);
     members.push({ student: s, goals: goals.filter((g: any) => g.active) });
   }
-  const gen = await generateStory(members, { theme });
+  const history = await storage.goalHistory(groupId);
+  const gen = await generateStory(members, { theme, history });
   return storage.createStory({
     group_id: groupId,
     title: gen.title,
