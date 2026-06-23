@@ -65,9 +65,18 @@ export interface Story {
   stop_points: StopPoint[];
   target_goal_ids: number[];
   audio_status: string;
-  audio_json: string;
+  audio: StoryAudio;
   image_status: string;
-  images_json: string;
+  images: Record<string, unknown>;
+}
+
+export interface StoryAudio {
+  url?: string;
+  voice?: string;
+  model?: string;
+  chars?: number;
+  generated_at?: string;
+  error?: string;
 }
 
 export interface Session {

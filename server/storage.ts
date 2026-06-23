@@ -66,9 +66,9 @@ function parseStoryRow(r: any): Story {
     stop_points: safeParse<StopPoint[]>(r.stop_points_json, []),
     target_goal_ids: safeParse<number[]>(r.target_goal_ids_json, []),
     audio_status: r.audio_status,
-    audio_json: r.audio_json,
+    audio: safeParse<any>(r.audio_json, {}),
     image_status: r.image_status,
-    images_json: r.images_json,
+    images: safeParse<any>(r.images_json, {}),
   };
 }
 function safeParse<T>(s: any, fallback: T): T {

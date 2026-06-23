@@ -12,6 +12,9 @@ import {
   ListOrdered,
   MapPin,
   UsersRound,
+  Volume2,
+  Headphones,
+  RefreshCw,
 } from "lucide-react";
 import type { Story, GroupWithMembers, Student } from "@shared/schema";
 import { AppShell } from "@/components/AppShell";
@@ -241,6 +244,11 @@ export default function StoryLibrary() {
                           <span className="inline-flex items-center gap-1">
                             <UsersRound className="h-3.5 w-3.5" /> {targetCount} students
                           </span>
+                          {s.audio_status === "ready" && s.audio?.url ? (
+                            <span className="inline-flex items-center gap-1 text-primary">
+                              <Headphones className="h-3.5 w-3.5" /> narrated
+                            </span>
+                          ) : null}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button
@@ -342,6 +350,8 @@ export function StoryPreviewDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <NarrationPanel story={story} />
+
         <div className="space-y-6">
           {story.beats.map((beat, idx) => {
             const stops = story.stop_points.filter((sp) => sp.afterBeatId === beat.id);
@@ -382,6 +392,156 @@ export function StoryPreviewDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const VOICE_OPTIONS = [
+  { value: "nova", label: "Nova — warm, friendly (recommended)" },
+  { value: "shimmer", label: "Shimmer — bright, gentle" },
+  { value: "fable", label: "Fable — expressive, storyteller" },
+  { value: "alloy", label: "Alloy — neutral, clear" },
+  { value: "echo", label: "Echo — calm, steady" },
+  { value: "onyx", label: "Onyx — deep, grounded" },
+];
+
+function VoiceSelect({ voice, setVoice }: { voice: string; setVoice: (v: string) => void }) {
+  return (
+    <div className="min-w-[200px] flex-1 space-y-1.5">
+      <Label className="text-xs">Voice</Label>
+      <Select value={voice} onValueChange={setVoice}>
+        <SelectTrigger data-testid="select-voice" className="h-9">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {VOICE_OPTIONS.map((v) => (
+            <SelectItem key={v.value} value={v.value}>
+              {v.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+function NarrationPanel({ story }: { story: Story }) {
+  const { toast } = useToast();
+  const liveQ = useQuery<Story>({
+    queryKey: [`/api/stories/${story.id}`],
+    initialData: story,
+  });
+  const live = liveQ.data ?? story;
+  const audio = live.audio ?? {};
+  const status = live.audio_status ?? "none";
+  const hasAudio = status === "ready" && !!audio.url;
+  const [voice, setVoice] = useState<string>(audio.voice || "nova");
+
+  const generate = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/stories/${story.id}/audio`, { voice });
+      return res.json();
+    },
+    onSuccess: (updated: Story) => {
+      queryClient.setQueryData([`/api/stories/${story.id}`], updated);
+      queryClient.invalidateQueries({ queryKey: ["/api/stories"] });
+      toast({ title: "Narration ready" });
+    },
+    onError: (e: Error) => {
+      if (e.message.startsWith("503")) {
+        toast({
+          title: "Narration unavailable",
+          description: "The OpenAI key isn't configured on the server yet.",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Could not generate narration", description: e.message, variant: "destructive" });
+      }
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("DELETE", `/api/stories/${story.id}/audio`);
+      return res.json();
+    },
+    onSuccess: (updated: Story) => {
+      queryClient.setQueryData([`/api/stories/${story.id}`], updated);
+      queryClient.invalidateQueries({ queryKey: ["/api/stories"] });
+      toast({ title: "Narration removed" });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Could not remove narration", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-lg border bg-muted/30 p-4" data-testid="narration-panel">
+      <div className="mb-3 flex items-center gap-2">
+        <Headphones className="h-4 w-4 text-primary" />
+        <span className="font-display text-sm font-semibold">AI voice narration</span>
+        {hasAudio && audio.voice ? (
+          <Badge variant="secondary" className="font-normal capitalize">
+            {audio.voice}
+          </Badge>
+        ) : null}
+      </div>
+
+      {hasAudio ? (
+        <div className="space-y-3">
+          <audio
+            key={audio.url}
+            controls
+            preload="none"
+            src={audio.url}
+            className="w-full"
+            data-testid="audio-player"
+          />
+          <div className="flex flex-wrap items-end gap-2">
+            <VoiceSelect voice={voice} setVoice={setVoice} />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => generate.mutate()}
+              disabled={generate.isPending}
+              data-testid="button-regenerate-audio"
+            >
+              <RefreshCw className="mr-1 h-4 w-4" />
+              {generate.isPending ? "Generating…" : "Regenerate"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => remove.mutate()}
+              disabled={remove.isPending}
+              data-testid="button-remove-audio"
+            >
+              <Trash2 className="mr-1 h-4 w-4 text-destructive" />
+              Remove
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-end gap-2">
+          <VoiceSelect voice={voice} setVoice={setVoice} />
+          <Button
+            size="sm"
+            onClick={() => generate.mutate()}
+            disabled={generate.isPending}
+            data-testid="button-generate-audio"
+          >
+            <Volume2 className="mr-1 h-4 w-4" />
+            {generate.isPending ? "Generating narration…" : "Generate narration"}
+          </Button>
+          {status === "error" ? (
+            <span className="w-full text-xs text-destructive">
+              Last attempt failed{audio.error ? `: ${audio.error}` : ""}. Try again.
+            </span>
+          ) : null}
+        </div>
+      )}
+      <p className="mt-2 text-xs text-muted-foreground">
+        Reads the full story aloud (scenes only, not the stop-point prompts). Generating takes a few seconds.
+      </p>
+    </div>
   );
 }
 

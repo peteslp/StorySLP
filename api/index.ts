@@ -110,9 +110,9 @@ function parseStoryRow(r: any) {
     stop_points: safeParse<any[]>(r.stop_points_json, []),
     target_goal_ids: safeParse<number[]>(r.target_goal_ids_json, []),
     audio_status: r.audio_status,
-    audio_json: r.audio_json,
+    audio: safeParse<any>(r.audio_json, {}),
     image_status: r.image_status,
-    images_json: r.images_json,
+    images: safeParse<any>(r.images_json, {}),
   };
 }
 
@@ -302,6 +302,14 @@ const storage = {
   async deleteStory(id: number) {
     await sb<null>(`/stories?id=eq.${id}`, { method: "DELETE" });
   },
+  async updateStoryAudio(id: number, status: string, audio: any) {
+    const rows = await sb<any[]>(`/stories?id=eq.${id}`, {
+      method: "PATCH",
+      headers: repr,
+      body: JSON.stringify({ audio_status: status, audio_json: JSON.stringify(audio ?? {}) }),
+    });
+    return rows[0] ? parseStoryRow(rows[0]) : undefined;
+  },
 
   // ---------- Sessions + logs ----------
   listSessions(groupId: number) {
@@ -400,6 +408,82 @@ const storage = {
 // ---------------- Story generation (OpenAI) ----------------
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
+// High-quality narration. tts-1-hd = OpenAI's HD voice model. Voice overridable per request.
+const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "tts-1-hd";
+const TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
+const DEFAULT_TTS_VOICE = process.env.OPENAI_TTS_VOICE || "nova";
+const AUDIO_BUCKET = "story-audio";
+
+// Plain-text narration script from a story's beats (no stop-points; this is the read-aloud).
+function storyNarrationText(story: any): string {
+  const beats = Array.isArray(story?.beats) ? story.beats : [];
+  const parts: string[] = [];
+  if (story?.title) parts.push(String(story.title) + ".");
+  for (const b of beats) {
+    const t = (b?.text || "").trim();
+    if (t) parts.push(t);
+  }
+  return parts.join("\n\n");
+}
+
+// Upload an MP3 buffer to the public Supabase Storage bucket; return its public URL.
+async function uploadAudio(objectPath: string, mp3: Buffer): Promise<string> {
+  const url = `${SUPABASE_URL}/storage/v1/object/${AUDIO_BUCKET}/${objectPath}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "audio/mpeg",
+      "x-upsert": "true",
+      "Cache-Control": "public, max-age=31536000",
+    },
+    body: mp3,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Storage upload ${res.status}: ${body}`);
+  }
+  return `${SUPABASE_URL}/storage/v1/object/public/${AUDIO_BUCKET}/${objectPath}`;
+}
+
+// Generate narration for a story: OpenAI TTS -> upload -> return audio meta.
+async function synthesizeStoryAudio(
+  story: any,
+  opts: { voice?: string } = {},
+): Promise<{ url: string; voice: string; model: string; chars: number; generated_at: string }> {
+  const text = storyNarrationText(story);
+  if (!text.trim()) throw new Error("This story has no narrative text to read.");
+  const voice = TTS_VOICES.includes(String(opts.voice)) ? String(opts.voice) : DEFAULT_TTS_VOICE;
+  const res = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_TTS_MODEL,
+      voice,
+      input: text,
+      response_format: "mp3",
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OpenAI TTS ${res.status}: ${body}`);
+  }
+  const arrayBuf = await res.arrayBuffer();
+  const mp3 = Buffer.from(arrayBuf);
+  const objectPath = `story-${story.id}-${voice}-${Date.now()}.mp3`;
+  const publicUrl = await uploadAudio(objectPath, mp3);
+  return {
+    url: publicUrl,
+    voice,
+    model: OPENAI_TTS_MODEL,
+    chars: text.length,
+    generated_at: new Date().toISOString(),
+  };
+}
 
 function gradeBand(students: any[]): string {
   const grades = students
@@ -725,6 +809,37 @@ export default async function handler(req: any, res: any) {
         await storage.deleteStory(id);
         return json(res, 200, { ok: true });
       }
+      // POST /api/stories/:id/audio  -> generate high-quality narration
+      if (seg[2] === "audio" && seg.length === 3 && method === "POST") {
+        if (!OPENAI_API_KEY) {
+          return json(res, 503, {
+            error: "Narration isn't configured yet (missing OpenAI key).",
+            unavailable: true,
+          });
+        }
+        const story = await storage.getStory(id);
+        if (!story) return json(res, 404, { error: "not found" });
+        const b = await readBody(req);
+        try {
+          await storage.updateStoryAudio(id, "generating", { ...(story.audio || {}) });
+          const audio = await synthesizeStoryAudio(story, { voice: b.voice });
+          const updated = await storage.updateStoryAudio(id, "ready", audio);
+          return json(res, 200, updated);
+        } catch (e: any) {
+          await storage.updateStoryAudio(id, "error", { error: String(e?.message || e) });
+          return json(res, 502, { error: "Narration failed.", message: String(e?.message || e) });
+        }
+      }
+      // DELETE /api/stories/:id/audio  -> clear narration
+      if (seg[2] === "audio" && seg.length === 3 && method === "DELETE") {
+        const updated = await storage.updateStoryAudio(id, "none", {});
+        return updated ? json(res, 200, updated) : json(res, 404, { error: "not found" });
+      }
+    }
+
+    // GET /api/voices -> available narration voices
+    if (seg[0] === "voices" && seg.length === 1 && method === "GET") {
+      return json(res, 200, { voices: TTS_VOICES, default: DEFAULT_TTS_VOICE });
     }
 
     // ---- /sessions ... ----
