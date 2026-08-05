@@ -15,6 +15,7 @@ import {
   Pause,
   Loader2,
   Images,
+  SkipForward,
 } from "lucide-react";
 import type { Story, Student, StopPoint, ComicPanel } from "@shared/schema";
 import { useComic } from "@/lib/useComic";
@@ -304,11 +305,19 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
           current &&
           currentBeat && (
             <div className="space-y-6">
-              {/* Beat text */}
+              {/* Beat text + inline comic panel (visible on all screen sizes) */}
               <div>
                 <div className="mb-1 font-mono text-xs font-semibold uppercase tracking-wider text-primary">
                   Scene {current.beatIndex + 1} of {totalBeats}
                 </div>
+                {panelByBeat.get(currentBeat.id) ? (
+                  <img
+                    src={panelByBeat.get(currentBeat.id)!.url}
+                    alt=""
+                    className="mb-4 w-full max-w-sm rounded-lg border-2 border-border bg-card object-cover shadow-sm xl:hidden"
+                    data-testid={`comic-panel-inline-${currentBeat.id}`}
+                  />
+                ) : null}
                 <p
                   className="font-display text-lg leading-relaxed text-foreground"
                   data-testid="text-beat"
@@ -324,6 +333,7 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
                 student={studentById.get(current.stop.studentId)}
                 tally={currentTally}
                 onScore={score}
+                onSkip={() => setStepIdx((i) => i + 1)}
               />
 
               <div className="flex justify-end">
@@ -541,11 +551,13 @@ function StopPointRunner({
   student,
   tally,
   onScore,
+  onSkip,
 }: {
   stop: StopPoint;
   student: Student | undefined;
   tally: Tally | undefined;
   onScore: (type: "correct" | "prompt" | "incorrect") => void;
+  onSkip: () => void;
 }) {
   const t = tally ?? { trials: 0, correct: 0, prompted: 0 };
 
@@ -612,7 +624,7 @@ function StopPointRunner({
         </Collapsible>
 
         {/* Score buttons */}
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Button
             variant="outline"
             className="border-primary/40 text-primary hover:bg-primary/10"
@@ -639,6 +651,16 @@ function StopPointRunner({
           >
             <XCircle className="mr-1 h-4 w-4" />
             Incorrect
+          </Button>
+          <Button
+            variant="outline"
+            className="border-muted-foreground/30 text-muted-foreground hover:bg-muted"
+            onClick={onSkip}
+            data-testid="button-score-skip"
+            title="Skip this stop-point without recording a trial"
+          >
+            <SkipForward className="mr-1 h-4 w-4" />
+            Skip
           </Button>
         </div>
 
