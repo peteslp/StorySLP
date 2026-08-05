@@ -1,13 +1,37 @@
 import { apiRequest } from "@/lib/queryClient";
 
-// Friendly labels for goal_type codes
+// General SLP goal-type categories used across the app.
+export const GOAL_TYPES = [
+  "articulation",
+  "language",
+  "vocabulary",
+  "grammar",
+  "fluency",
+  "pragmatics",
+  "comprehension",
+  "voice",
+  "aac",
+] as const;
+
+// Friendly labels for goal_type codes. Legacy codes are mapped to the new
+// general categories so any pre-migration values still render sensibly.
 const GOAL_TYPE_LABELS: Record<string, string> = {
-  vocab: "Vocabulary / context clues",
-  artic_s: "Articulation /s/",
-  artic_th: "Articulation /th/",
-  main_idea: "Main idea",
-  restate_active: "Restate (active voice)",
-  figurative: "Figurative language",
+  articulation: "Articulation",
+  language: "Language",
+  vocabulary: "Vocabulary",
+  grammar: "Grammar",
+  fluency: "Fluency",
+  pragmatics: "Pragmatics / social language",
+  comprehension: "Comprehension",
+  voice: "Voice",
+  aac: "AAC",
+  // Legacy fallbacks
+  vocab: "Vocabulary",
+  artic_s: "Articulation",
+  artic_th: "Articulation",
+  main_idea: "Comprehension",
+  restate_active: "Grammar",
+  figurative: "Language",
 };
 
 export function goalTypeLabel(goalType: string): string {

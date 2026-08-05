@@ -47,16 +47,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { PRESET_COLORS, goalTypeLabel, contrastText, getJSON, formatDate } from "@/lib/storyslp";
-
-const GOAL_TYPES = [
-  "vocab",
-  "artic_s",
-  "artic_th",
-  "main_idea",
-  "restate_active",
-  "figurative",
-];
+import { PRESET_COLORS, GOAL_TYPES, goalTypeLabel, contrastText, getJSON, formatDate } from "@/lib/storyslp";
 
 export default function Students() {
   const { toast } = useToast();
@@ -355,7 +346,7 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
   const [editing, setEditing] = useState<Goal | null>(null);
   const [label, setLabel] = useState("");
   const [text, setText] = useState("");
-  const [goalType, setGoalType] = useState(GOAL_TYPES[0]);
+  const [goalType, setGoalType] = useState<string>(GOAL_TYPES[0]);
   const [criteria, setCriteria] = useState("80%");
   const [active, setActive] = useState(true);
   const [showForm, setShowForm] = useState(false);
