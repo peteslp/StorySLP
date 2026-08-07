@@ -66,7 +66,18 @@ import {
 } from "@/components/ui/table";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { DAY_NAMES, dayName, goalTypeLabel, formatDate } from "@/lib/storyslp";
+import {
+  DAY_NAMES,
+  dayName,
+  goalTypeLabel,
+  formatDate,
+  STORY_FORMATS,
+  STORY_TONES,
+  STORY_LENGTHS,
+  READING_LEVELS,
+  STORY_GEN_DEFAULTS,
+  NONFICTION_FORMATS,
+} from "@/lib/storyslp";
 
 export default function Groups() {
   const { toast } = useToast();
@@ -772,12 +783,20 @@ function GenerateDialog({
 }) {
   const { toast } = useToast();
   const [theme, setTheme] = useState("");
+  const [format, setFormat] = useState<string>(STORY_GEN_DEFAULTS.format);
+  const [length, setLength] = useState<string>(STORY_GEN_DEFAULTS.length);
+  const [tone, setTone] = useState<string>(STORY_GEN_DEFAULTS.tone);
+  const [readingLevel, setReadingLevel] = useState<string>(STORY_GEN_DEFAULTS.reading_level);
 
   const generate = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/stories/generate", {
         group_id: group.id,
         theme: theme || undefined,
+        format,
+        tone,
+        length,
+        reading_level: readingLevel,
       });
       return res.json();
     },
@@ -815,15 +834,85 @@ function GenerateDialog({
             goal of its {group.studentCount} members.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-1.5">
-          <Label htmlFor="theme">Theme (optional)</Label>
-          <Input
-            id="theme"
-            value={theme}
-            onChange={(e) => setTheme(e.target.value)}
-            placeholder="e.g. a trip to the tide pools"
-            data-testid="input-theme"
-          />
+        <div className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Format</Label>
+              <Select value={format} onValueChange={setFormat}>
+                <SelectTrigger data-testid="select-dialog-format">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STORY_FORMATS.map((f) => (
+                    <SelectItem key={f.value} value={f.value}>
+                      {f.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Length</Label>
+              <Select value={length} onValueChange={setLength}>
+                <SelectTrigger data-testid="select-dialog-length">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STORY_LENGTHS.map((l) => (
+                    <SelectItem key={l.value} value={l.value}>
+                      {l.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Tone</Label>
+              <Select value={tone} onValueChange={setTone}>
+                <SelectTrigger data-testid="select-dialog-tone">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STORY_TONES.map((t) => (
+                    <SelectItem key={t.value} value={t.value}>
+                      {t.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Reading level</Label>
+              <Select value={readingLevel} onValueChange={setReadingLevel}>
+                <SelectTrigger data-testid="select-dialog-reading-level">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {READING_LEVELS.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="theme">
+              {NONFICTION_FORMATS.has(format) ? "Topic (optional)" : "Theme (optional)"}
+            </Label>
+            <Input
+              id="theme"
+              value={theme}
+              onChange={(e) => setTheme(e.target.value)}
+              placeholder={
+                NONFICTION_FORMATS.has(format)
+                  ? "e.g. tide pool ecosystems, life of Marie Curie…"
+                  : "e.g. a trip to the tide pools"
+              }
+              data-testid="input-theme"
+            />
+          </div>
         </div>
         <DialogFooter>
           <Button

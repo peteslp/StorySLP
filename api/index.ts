@@ -764,9 +764,133 @@ function balanceStopPoints(
   stops.sort((a, b) => (order.get(a.afterBeatId) ?? 0) - (order.get(b.afterBeatId) ?? 0));
 }
 
+type StoryFormat =
+  | "adventure"
+  | "realistic"
+  | "mystery"
+  | "scifi"
+  | "fantasy"
+  | "historical"
+  | "informational"
+  | "biography"
+  | "how_it_works"
+  | "news_article";
+
+type StoryTone = "playful" | "serious" | "humorous" | "suspenseful" | "calm";
+type StoryLength = "short" | "standard" | "long";
+type ReadingLevel = "auto" | "simpler" | "harder";
+
+type GenerateOpts = {
+  theme?: string;
+  format?: StoryFormat;
+  tone?: StoryTone;
+  length?: StoryLength;
+  reading_level?: ReadingLevel;
+  history?: Map<number, { total_trials: number; last_session_date: string | null }>;
+};
+
+const FORMAT_GUIDANCE: Record<StoryFormat, { label: string; guidance: string }> = {
+  adventure: {
+    label: "Adventure narrative",
+    guidance:
+      "An engaging fictional adventure with rising action, a challenge to overcome, and a satisfying resolution. Use vivid setting details and character dialogue.",
+  },
+  realistic: {
+    label: "Realistic slice-of-life fiction",
+    guidance:
+      "A believable everyday-life story set in a school, home, park, sports team, or community setting. Focus on relatable social situations, feelings, and choices — no magic or fantasy elements.",
+  },
+  mystery: {
+    label: "Mystery",
+    guidance:
+      "A kid-appropriate mystery: something is missing, out of place, or unexplained. Characters gather clues and reason through them to solve it. Include red herrings and a satisfying reveal.",
+  },
+  scifi: {
+    label: "Science fiction",
+    guidance:
+      "A grounded science-fiction story: space exploration, robots, future technology, or a scientific what-if. Keep the science plausible and educational where possible.",
+  },
+  fantasy: {
+    label: "Fantasy",
+    guidance:
+      "A fantasy story with magic, mythical creatures, or an imagined world. Establish the rules of the world clearly so students can follow.",
+  },
+  historical: {
+    label: "Historical fiction",
+    guidance:
+      "Fictional characters set inside a real historical period or event. Weave in accurate period details (clothing, transportation, daily life) that a child would notice. Do not misrepresent historical facts.",
+  },
+  informational: {
+    label: "Informational / factual nonfiction",
+    guidance:
+      "A factual nonfiction piece — like a magazine article for kids — about a real topic (animals, weather, space, human body, machines, geography, cultures, etc.). Present real facts in an engaging narrative or explainer voice, not a fictional plot. No fictional characters or dialogue-driven story. Each beat should teach real information about the topic.",
+  },
+  biography: {
+    label: "Biography of a real person",
+    guidance:
+      "A short factual biography of a real, notable, age-appropriate figure (scientist, artist, athlete, activist, inventor, historical leader). Cover early life, key contribution, and legacy. All facts must be accurate — do NOT invent events.",
+  },
+  how_it_works: {
+    label: "How-it-works explainer",
+    guidance:
+      "A step-by-step explainer of how a real thing works (a volcano, the water cycle, a suspension bridge, an airplane, digestion, a computer, etc.). Each beat covers one step or component in order.",
+  },
+  news_article: {
+    label: "News-style feature article",
+    guidance:
+      "A kid-friendly news-style feature about a real, evergreen topic (a scientific discovery, a community effort, an animal conservation story). Use a journalistic tone with a lead paragraph, background, quotes-style dialogue is optional, and a conclusion. Facts must be plausible and accurate.",
+  },
+};
+
+const TONE_GUIDANCE: Record<StoryTone, string> = {
+  playful: "Keep the tone light, playful, and full of small delights.",
+  serious: "Keep the tone serious and thoughtful; treat the subject with respect.",
+  humorous: "Weave in age-appropriate humor, wordplay, and funny mishaps.",
+  suspenseful: "Build suspense with cliffhangers between beats and rising stakes.",
+  calm: "Keep the tone calm, gentle, and reassuring — no scares or high stakes.",
+};
+
+type LengthSpec = {
+  minutes: number;
+  beats: string;
+  perBeatSentences: string;
+  perBeatWords: string;
+  totalWords: string;
+};
+
+const LENGTH_SPEC: Record<StoryLength, LengthSpec> = {
+  short: {
+    minutes: 15,
+    beats: "7 to 9",
+    perBeatSentences: "5-7",
+    perBeatWords: "~90-130",
+    totalWords: "roughly 900-1,200",
+  },
+  standard: {
+    minutes: 30,
+    beats: "12 to 16",
+    perBeatSentences: "7-10",
+    perBeatWords: "~130-180",
+    totalWords: "roughly 2,000-2,600",
+  },
+  long: {
+    minutes: 45,
+    beats: "16 to 20",
+    perBeatSentences: "8-11",
+    perBeatWords: "~150-200",
+    totalWords: "roughly 3,000-3,800",
+  },
+};
+
+const READING_LEVEL_GUIDANCE: Record<ReadingLevel, string> = {
+  auto: "Match vocabulary and sentence complexity to the student grade band above.",
+  simpler: "Use SIMPLER vocabulary and shorter sentences than the grade band suggests, without sounding babyish. Keep sentences to ~10-14 words on average.",
+  harder: "Use MORE CHALLENGING vocabulary and longer, more complex sentences than the grade band suggests. Include a few Tier-2 vocabulary words that students can infer from context.",
+};
+
 async function generateStory(
   members: { student: any; goals: any[] }[],
-  opts: { theme?: string; history?: Map<number, { total_trials: number; last_session_date: string | null }> } = {},
+  opts: GenerateOpts = {},
 ): Promise<any> {
   const withGoals = members.filter((m) => m.goals.length > 0);
   if (withGoals.length === 0) {
@@ -829,14 +953,33 @@ async function generateStory(
       return `  Student "${m.student.name}" (studentId ${m.student.id}, grade ${m.student.grade ?? "?"}):\n${lines}`;
     })
     .join("\n");
-  const theme = opts.theme?.trim()
-    ? `The story theme/setting should be: ${opts.theme.trim()}.`
-    : `Pick an engaging, age-appropriate adventure theme.`;
+  const format = opts.format ?? "adventure";
+  const tone = opts.tone ?? "playful";
+  const length = opts.length ?? "standard";
+  const readingLevel = opts.reading_level ?? "auto";
+  const spec = LENGTH_SPEC[length];
+  const fmt = FORMAT_GUIDANCE[format];
+  const isNonfiction = format === "informational" || format === "biography" || format === "how_it_works" || format === "news_article";
 
-  const prompt = `You are an expert speech-language pathologist and children's story author.
-Write ONE cohesive interactive therapy story for a small group, suitable for ${band}.
-The story is read aloud scene-by-scene. After certain scenes, the clinician pauses at a
-"stop-point" to work on ONE specific student's IEP goal using the story content.
+  const themeLine = opts.theme?.trim()
+    ? `Topic / subject: ${opts.theme.trim()}.`
+    : isNonfiction
+      ? "Pick an age-appropriate, high-interest real-world topic."
+      : "Pick an engaging, age-appropriate setting.";
+
+  const prompt = `You are an expert speech-language pathologist and children's ${isNonfiction ? "nonfiction writer" : "story author"}.
+Write ONE cohesive interactive therapy piece for a small group, suitable for ${band}.
+The piece is read aloud scene-by-scene. After certain scenes, the clinician pauses at a
+"stop-point" to work on ONE specific student's IEP goal using the content.
+
+FORMAT: ${fmt.label}.
+${fmt.guidance}
+
+TONE: ${TONE_GUIDANCE[tone]}
+
+READING LEVEL: ${READING_LEVEL_GUIDANCE[readingLevel]}
+
+${themeLine}
 
 THE STUDENTS AND THEIR ACTIVE GOALS:
 ${goalLines}
@@ -848,30 +991,32 @@ the most repetition THIS session. "light" goals were practiced more recently and
 - light goals: give EXACTLY ONE stop-point each, so they are still touched but not over-emphasized.
 Before returning, COUNT your stop-points per goalId and confirm every FOCUS goal has 3 and every light goal has 1. Every active goal must appear. Do not under-serve any FOCUS goal.
 
-${theme}
-
 LENGTH TARGET — IMPORTANT:
-- This story must fill a FULL ~30-minute therapy session of reading aloud plus stop-point discussion. Do NOT write a short story.
-- Write 10 to 14 ordered "beats" (scenes). Each beat must be a SUBSTANTIAL paragraph of 5-8 sentences (~90-140 words) of rich, descriptive narrative — vivid setting, character dialogue, and rising action — that flows into the next beat.
-- The total narrative across all beats should be roughly 1,000-1,500 words. Develop a real arc: setup, escalating challenges, a climax, and a resolution.
+- This piece must fill a FULL ~${spec.minutes}-minute therapy session of reading aloud plus stop-point discussion. Do NOT write a short piece.
+- Write ${spec.beats} ordered "beats" (scenes/sections). Each beat must be a SUBSTANTIAL paragraph of ${spec.perBeatSentences} sentences (${spec.perBeatWords} words) of rich, descriptive ${isNonfiction ? "informative content — real facts, examples, and concrete details" : "narrative — vivid setting, character dialogue, and rising action"} that flows into the next beat.
+- The total across all beats should be ${spec.totalWords} words. ${isNonfiction ? "Structure the content logically (chronological, cause-and-effect, or general-to-specific) with a strong intro and conclusion." : "Develop a real arc: setup, escalating challenges, a climax, and a resolution."}
 
 REQUIREMENTS:
-- FERPA / privacy: the story's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names.
+- ${isNonfiction ? "FACTUAL ACCURACY: every fact stated must be verifiably true. Do NOT invent statistics, dates, or quotes. If you're unsure of a specific number, phrase it qualitatively (\"most\", \"many scientists believe\") instead of inventing precision." : "FERPA / privacy: the piece's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names."}
 - Follow the GOAL ROTATION rule above for how many stop-points each goal gets (FOCUS goals ≥ 3, light goals ≥ 1). Distribute stop-points across the beats; multiple stop-points may follow the same beat.
-- Each stop-point MUST reference concrete words, phrases, or events from the beat it follows (afterBeatId).
+- Each stop-point MUST reference concrete words, phrases, or ${isNonfiction ? "facts" : "events"} from the beat it follows (afterBeatId).
 - Tailor each stop-point to its goal type:
-    * vocab/context clues: ask the student to infer a word's meaning using sentence context.
-    * artic_s / artic_th / articulation: give a sentence to read aloud loaded with the target sound; targetResponse notes which words to score.
-    * main_idea: read a complex/embedded sentence, ask for the main idea in simple words.
-    * restate_active: read a passive-voice sentence, ask them to restate in active voice (who did what).
-    * figurative: point to a simile/metaphor/hyperbole in the text and ask what it really means.
+    * articulation: give a sentence from the beat to read aloud loaded with the target sound; targetResponse notes which words to score.
+    * vocabulary: ask the student to infer a Tier-2 word's meaning using sentence context.
+    * language: work with figurative language, sentence structure, or word relationships in the beat.
+    * grammar: read a passive-voice sentence and ask them to restate in active voice, or work on verb tense, subject-verb agreement, pronouns, etc.
+    * fluency: ask the student to read a phrase from the beat aloud using their fluency strategy (easy onset, pull-out, etc.).
+    * pragmatics: use a social situation in the beat to work on perspective-taking, indirect language, or conversational skills.
+    * comprehension: read a complex/embedded sentence or short passage from the beat and ask for the main idea, inference, or a summary.
+    * voice: ask the student to read a phrase from the beat using their target voice quality (loudness, resonance, gentle onset).
+    * aac: give a communication opportunity tied to the beat and note which vocabulary the student should navigate to on their device.
 - responseType is "open" for most; use "choice" with a "choices" array (3 options) where a multiple-choice check fits.
 - Each stop-point includes: question (to the student), targetResponse (for the clinician), teachingNote (a quick scaffold).
 
 Return ONLY valid JSON with this exact shape:
 {
   "title": "string",
-  "est_minutes": 30,
+  "est_minutes": ${spec.minutes},
   "beats": [{"id":"b1","text":"..."}],
   "stop_points": [
     {"id":"s1","afterBeatId":"b1","studentId":0,"goalId":0,"goalType":"<type>","question":"...","targetResponse":"...","teachingNote":"...","responseType":"open"}
@@ -889,7 +1034,7 @@ Return ONLY valid JSON with this exact shape:
       messages: [{ role: "user", content: prompt }],
       response_format: { type: "json_object" },
       temperature: 0.8,
-      max_tokens: 8000,
+      max_tokens: length === "long" ? 14000 : length === "standard" ? 10000 : 6000,
     }),
   });
   if (!res.ok) {
@@ -900,7 +1045,7 @@ Return ONLY valid JSON with this exact shape:
   const raw = data?.choices?.[0]?.message?.content || "";
   const parsed = JSON.parse(extractJson(raw));
 
-  parsed.est_minutes = parsed.est_minutes || 30;
+  parsed.est_minutes = parsed.est_minutes || spec.minutes;
   parsed.beats = (parsed.beats || []).map((b: any, i: number) => ({
     id: b.id || `b${i + 1}`,
     text: b.text,
@@ -926,7 +1071,10 @@ Return ONLY valid JSON with this exact shape:
   return parsed;
 }
 
-async function generateForGroup(groupId: number, theme?: string) {
+async function generateForGroup(
+  groupId: number,
+  opts: Omit<GenerateOpts, "history"> = {},
+) {
   const groups = await storage.listGroups();
   const group = groups.find((g) => g.id === groupId);
   if (!group) throw new Error("Group not found.");
@@ -936,7 +1084,7 @@ async function generateForGroup(groupId: number, theme?: string) {
     members.push({ student: s, goals: goals.filter((g: any) => g.active) });
   }
   const history = await storage.goalHistory(groupId);
-  const gen = await generateStory(members, { theme, history });
+  const gen = await generateStory(members, { ...opts, history });
   return storage.createStory({
     group_id: groupId,
     title: gen.title,
@@ -1110,7 +1258,13 @@ export default async function handler(req: any, res: any) {
         const b = await readBody(req);
         if (!b.group_id) return json(res, 400, { error: "group_id required" });
         try {
-          const story = await generateForGroup(Number(b.group_id), b.theme);
+          const story = await generateForGroup(Number(b.group_id), {
+            theme: b.theme,
+            format: b.format,
+            tone: b.tone,
+            length: b.length,
+            reading_level: b.reading_level,
+          });
           return json(res, 200, story);
         } catch (e: any) {
           const msg = String(e?.message || e);

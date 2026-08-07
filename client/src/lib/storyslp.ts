@@ -101,3 +101,54 @@ export async function getJSON<T>(url: string): Promise<T> {
   const res = await apiRequest("GET", url);
   return (await res.json()) as T;
 }
+
+// ---- Story generation options (shared between StoryLibrary + Groups dialogs) ----
+
+export const STORY_FORMATS = [
+  { value: "adventure", label: "Adventure" },
+  { value: "realistic", label: "Realistic (slice-of-life)" },
+  { value: "mystery", label: "Mystery" },
+  { value: "scifi", label: "Science fiction" },
+  { value: "fantasy", label: "Fantasy" },
+  { value: "historical", label: "Historical fiction" },
+  { value: "informational", label: "Informational (nonfiction)" },
+  { value: "biography", label: "Biography" },
+  { value: "how_it_works", label: "How-it-works explainer" },
+  { value: "news_article", label: "News article" },
+] as const;
+
+export const STORY_TONES = [
+  { value: "playful", label: "Playful" },
+  { value: "serious", label: "Serious" },
+  { value: "humorous", label: "Humorous" },
+  { value: "suspenseful", label: "Suspenseful" },
+  { value: "calm", label: "Calm" },
+] as const;
+
+export const STORY_LENGTHS = [
+  { value: "short", label: "Short (~15 min)" },
+  { value: "standard", label: "Standard (~30 min)" },
+  { value: "long", label: "Long (~45 min)" },
+] as const;
+
+export const READING_LEVELS = [
+  { value: "auto", label: "Auto (match student grades)" },
+  { value: "simpler", label: "Simpler" },
+  { value: "harder", label: "More challenging" },
+] as const;
+
+export const STORY_GEN_DEFAULTS = {
+  format: "adventure",
+  tone: "playful",
+  length: "standard",
+  reading_level: "auto",
+} as const;
+
+// Formats where "Theme" should be relabeled "Topic" (nonfiction).
+export const NONFICTION_FORMATS = new Set([
+  "informational",
+  "biography",
+  "how_it_works",
+  "news_article",
+]);
+

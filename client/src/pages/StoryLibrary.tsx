@@ -60,7 +60,15 @@ import {
 } from "@/components/ui/alert-dialog";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { goalTypeLabel } from "@/lib/storyslp";
+import {
+  goalTypeLabel,
+  STORY_FORMATS,
+  STORY_TONES,
+  STORY_LENGTHS,
+  READING_LEVELS,
+  STORY_GEN_DEFAULTS,
+  NONFICTION_FORMATS,
+} from "@/lib/storyslp";
 import { StatusBadge } from "@/pages/Groups";
 
 export default function StoryLibrary() {
@@ -82,6 +90,10 @@ export default function StoryLibrary() {
   // generate controls
   const [genGroup, setGenGroup] = useState("");
   const [theme, setTheme] = useState("");
+  const [format, setFormat] = useState<string>(STORY_GEN_DEFAULTS.format);
+  const [length, setLength] = useState<string>(STORY_GEN_DEFAULTS.length);
+  const [tone, setTone] = useState<string>(STORY_GEN_DEFAULTS.tone);
+  const [readingLevel, setReadingLevel] = useState<string>(STORY_GEN_DEFAULTS.reading_level);
 
   const approve = useMutation({
     mutationFn: async (id: number) =>
@@ -110,6 +122,10 @@ export default function StoryLibrary() {
       const res = await apiRequest("POST", "/api/stories/generate", {
         group_id: Number(genGroup),
         theme: theme || undefined,
+        format,
+        tone,
+        length,
+        reading_level: readingLevel,
       });
       return res.json();
     },
@@ -150,46 +166,116 @@ export default function StoryLibrary() {
 
       {/* Generate control */}
       <Card className="mb-6">
-        <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
-          <div className="flex-1 space-y-1.5">
-            <Label>Group</Label>
-            <Select value={genGroup} onValueChange={setGenGroup}>
-              <SelectTrigger data-testid="select-generate-group">
-                <SelectValue placeholder="Choose a group…" />
-              </SelectTrigger>
-              <SelectContent>
-                {groups.length === 0 ? (
-                  <SelectItem value="__none" disabled>
-                    No groups yet
-                  </SelectItem>
-                ) : (
-                  groups.map((g) => (
-                    <SelectItem key={g.id} value={String(g.id)}>
-                      {g.name} ({g.studentCount})
+        <CardContent className="space-y-3 p-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="space-y-1.5">
+              <Label>Group</Label>
+              <Select value={genGroup} onValueChange={setGenGroup}>
+                <SelectTrigger data-testid="select-generate-group">
+                  <SelectValue placeholder="Choose a group…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {groups.length === 0 ? (
+                    <SelectItem value="__none" disabled>
+                      No groups yet
                     </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
+                  ) : (
+                    groups.map((g) => (
+                      <SelectItem key={g.id} value={String(g.id)}>
+                        {g.name} ({g.studentCount})
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Format</Label>
+              <Select value={format} onValueChange={setFormat}>
+                <SelectTrigger data-testid="select-generate-format">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STORY_FORMATS.map((f) => (
+                    <SelectItem key={f.value} value={f.value}>
+                      {f.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Length</Label>
+              <Select value={length} onValueChange={setLength}>
+                <SelectTrigger data-testid="select-generate-length">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STORY_LENGTHS.map((l) => (
+                    <SelectItem key={l.value} value={l.value}>
+                      {l.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Tone</Label>
+              <Select value={tone} onValueChange={setTone}>
+                <SelectTrigger data-testid="select-generate-tone">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STORY_TONES.map((t) => (
+                    <SelectItem key={t.value} value={t.value}>
+                      {t.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Reading level</Label>
+              <Select value={readingLevel} onValueChange={setReadingLevel}>
+                <SelectTrigger data-testid="select-generate-reading-level">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {READING_LEVELS.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5 lg:col-span-3">
+              <Label htmlFor="lib-theme">
+                {NONFICTION_FORMATS.has(format) ? "Topic (optional)" : "Theme (optional)"}
+              </Label>
+              <Input
+                id="lib-theme"
+                value={theme}
+                onChange={(e) => setTheme(e.target.value)}
+                placeholder={
+                  NONFICTION_FORMATS.has(format)
+                    ? "e.g. tide pool ecosystems, life of Marie Curie…"
+                    : "e.g. a trip to the tide pools"
+                }
+                data-testid="input-generate-theme"
+              />
+            </div>
           </div>
-          <div className="flex-1 space-y-1.5">
-            <Label htmlFor="lib-theme">Theme (optional)</Label>
-            <Input
-              id="lib-theme"
-              value={theme}
-              onChange={(e) => setTheme(e.target.value)}
-              placeholder="e.g. a trip to the tide pools"
-              data-testid="input-generate-theme"
-            />
+          <div className="flex justify-end">
+            <Button
+              onClick={() => generate.mutate()}
+              disabled={!genGroup || generate.isPending}
+              data-testid="button-generate-story"
+            >
+              <Sparkles className="mr-1 h-4 w-4" />
+              {generate.isPending ? "Generating…" : "Generate story"}
+            </Button>
           </div>
-          <Button
-            onClick={() => generate.mutate()}
-            disabled={!genGroup || generate.isPending}
-            data-testid="button-generate-story"
-          >
-            <Sparkles className="mr-1 h-4 w-4" />
-            {generate.isPending ? "Generating…" : "Generate story"}
-          </Button>
         </CardContent>
       </Card>
 

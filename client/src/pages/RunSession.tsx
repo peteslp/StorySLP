@@ -4,8 +4,6 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   X,
   Check,
-  HandHelping,
-  XCircle,
   ChevronRight,
   Save,
   PartyPopper,
@@ -15,7 +13,6 @@ import {
   Pause,
   Loader2,
   Images,
-  SkipForward,
 } from "lucide-react";
 import type { Story, Student, StopPoint, ComicPanel } from "@shared/schema";
 import { useComic } from "@/lib/useComic";
@@ -34,15 +31,6 @@ import {
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { goalTypeLabel, getJSON } from "@/lib/storyslp";
-
-interface Tally {
-  trials: number;
-  correct: number;
-  prompted: number;
-}
-type TallyMap = Record<string, Tally>; // key = `${studentId}:${goalId}`
-
-const key = (studentId: number, goalId: number) => `${studentId}:${goalId}`;
 
 export default function RunSession() {
   const params = useParams();
@@ -172,32 +160,12 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
 
   // step index into `steps`; when >= steps.length we're at the summary
   const [stepIdx, setStepIdx] = useState(0);
-  const [tallies, setTallies] = useState<TallyMap>({});
   const [notes, setNotes] = useState("");
   const [saved, setSaved] = useState(false);
 
   const atSummary = stepIdx >= steps.length;
   const current = atSummary ? null : steps[stepIdx];
   const currentBeat = current ? beats[current.beatIndex] : null;
-
-  const score = (type: "correct" | "prompt" | "incorrect") => {
-    if (!current) return;
-    const k = key(current.stop.studentId, current.stop.goalId);
-    setTallies((prev) => {
-      const t = prev[k] ?? { trials: 0, correct: 0, prompted: 0 };
-      const next: Tally = { ...t, trials: t.trials + 1 };
-      if (type === "correct") next.correct += 1;
-      if (type === "prompt") {
-        next.correct += 1;
-        next.prompted += 1;
-      }
-      return { ...prev, [k]: next };
-    });
-  };
-
-  const currentTally = current
-    ? tallies[key(current.stop.studentId, current.stop.goalId)]
-    : undefined;
 
   const save = useMutation({
     mutationFn: async () => {
@@ -207,17 +175,6 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
         notes: notes || undefined,
       });
       const session = (await sres.json()) as { id: number };
-      for (const [k, t] of Object.entries(tallies)) {
-        if (t.trials === 0) continue;
-        const [studentId, goalId] = k.split(":").map(Number);
-        await apiRequest("POST", `/api/sessions/${session.id}/logs`, {
-          student_id: studentId,
-          goal_id: goalId,
-          trials: t.trials,
-          correct: t.correct,
-          prompted: t.prompted,
-        });
-      }
       return session;
     },
     onSuccess: () => {
@@ -292,9 +249,6 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
       <div className="mx-auto max-w-3xl px-4 py-8">
         {atSummary ? (
           <Summary
-            story={story}
-            tallies={tallies}
-            studentById={studentById}
             notes={notes}
             setNotes={setNotes}
             onSave={() => save.mutate()}
@@ -331,16 +285,12 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
                 key={current.stop.id}
                 stop={current.stop}
                 student={studentById.get(current.stop.studentId)}
-                tally={currentTally}
-                onScore={score}
-                onSkip={() => setStepIdx((i) => i + 1)}
               />
 
               <div className="flex justify-end">
                 <Button
                   size="lg"
                   onClick={() => setStepIdx((i) => i + 1)}
-                  disabled={!currentTally || currentTally.trials === 0}
                   data-testid="button-next"
                 >
                   {stepIdx === steps.length - 1 ? "Finish" : "Next"}
@@ -355,7 +305,7 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
         {!atSummary && steps.length === 0 && (
           <Centered>
             <p className="text-sm text-muted-foreground">
-              This story has no stop-points to score.
+              This story has no stop-points.
             </p>
             <Link href="/stories">
               <Button variant="outline">Back to Story Library</Button>
@@ -549,18 +499,10 @@ function ComicRail({
 function StopPointRunner({
   stop,
   student,
-  tally,
-  onScore,
-  onSkip,
 }: {
   stop: StopPoint;
   student: Student | undefined;
-  tally: Tally | undefined;
-  onScore: (type: "correct" | "prompt" | "incorrect") => void;
-  onSkip: () => void;
 }) {
-  const t = tally ?? { trials: 0, correct: 0, prompted: 0 };
-
   return (
     <Card data-testid={`stop-runner-${stop.id}`}>
       <CardContent className="space-y-4 p-5">
@@ -622,175 +564,46 @@ function StopPointRunner({
             </div>
           </CollapsibleContent>
         </Collapsible>
-
-        {/* Score buttons */}
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <Button
-            variant="outline"
-            className="border-primary/40 text-primary hover:bg-primary/10"
-            onClick={() => onScore("correct")}
-            data-testid="button-score-correct"
-          >
-            <Check className="mr-1 h-4 w-4" />
-            Correct
-          </Button>
-          <Button
-            variant="outline"
-            className="border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
-            onClick={() => onScore("prompt")}
-            data-testid="button-score-prompt"
-          >
-            <HandHelping className="mr-1 h-4 w-4" />
-            Correct w/ prompt
-          </Button>
-          <Button
-            variant="outline"
-            className="border-destructive/40 text-destructive hover:bg-destructive/10"
-            onClick={() => onScore("incorrect")}
-            data-testid="button-score-incorrect"
-          >
-            <XCircle className="mr-1 h-4 w-4" />
-            Incorrect
-          </Button>
-          <Button
-            variant="outline"
-            className="border-muted-foreground/30 text-muted-foreground hover:bg-muted"
-            onClick={onSkip}
-            data-testid="button-score-skip"
-            title="Skip this stop-point without recording a trial"
-          >
-            <SkipForward className="mr-1 h-4 w-4" />
-            Skip
-          </Button>
-        </div>
-
-        {/* Running tally */}
-        <div className="text-center text-sm text-muted-foreground" data-testid="text-running-tally">
-          {t.trials === 0
-            ? "No trials yet — score the response above."
-            : `${t.correct}/${t.trials} correct${t.prompted ? `, ${t.prompted} prompted` : ""}`}
-        </div>
       </CardContent>
     </Card>
   );
 }
 
 function Summary({
-  story,
-  tallies,
-  studentById,
   notes,
   setNotes,
   onSave,
   saving,
   saved,
 }: {
-  story: Story;
-  tallies: TallyMap;
-  studentById: Map<number, Student>;
   notes: string;
   setNotes: (v: string) => void;
   onSave: () => void;
   saving: boolean;
   saved: boolean;
 }) {
-  // group tallies by student
-  type Row = { studentId: number; goalId: number; tally: Tally };
-  const rows: Row[] = Object.entries(tallies)
-    .filter(([, t]) => t.trials > 0)
-    .map(([k, t]) => {
-      const [studentId, goalId] = k.split(":").map(Number);
-      return { studentId, goalId, tally: t };
-    });
-
-  // map goalId → label using stop points
-  const goalLabel = new Map<number, string>();
-  story.stop_points.forEach((sp) => {
-    if (!goalLabel.has(sp.goalId)) goalLabel.set(sp.goalId, goalTypeLabel(sp.goalType));
-  });
-
-  const byStudent = new Map<number, Row[]>();
-  rows.forEach((r) => {
-    if (!byStudent.has(r.studentId)) byStudent.set(r.studentId, []);
-    byStudent.get(r.studentId)!.push(r);
-  });
-
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2">
         <PartyPopper className="h-6 w-6 text-accent" />
-        <h1 className="font-display text-xl font-bold">Session summary</h1>
+        <h1 className="font-display text-xl font-bold">Session complete</h1>
       </div>
 
-      {rows.length === 0 ? (
-        <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            No goals were scored in this session.
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-4">
-          {Array.from(byStudent.entries()).map(([studentId, studentRows]) => {
-            const st = studentById.get(studentId);
-            return (
-              <Card key={studentId} data-testid={`summary-student-${studentId}`}>
-                <CardContent className="space-y-3 p-4">
-                  <div className="flex items-center gap-2">
-                    <StudentChip
-                      id={studentId}
-                      name={st?.name ?? `Student ${studentId}`}
-                      color={st?.color ?? "#0E9594"}
-                      variant="badge"
-                    />
-                    <span className="font-display font-semibold">
-                      {st?.name ?? `Student ${studentId}`}
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    {studentRows.map((r) => {
-                      const acc = Math.round((r.tally.correct / r.tally.trials) * 100);
-                      return (
-                        <div
-                          key={r.goalId}
-                          className="flex items-center justify-between gap-2 rounded-lg border p-2 text-sm"
-                          data-testid={`summary-goal-${studentId}-${r.goalId}`}
-                        >
-                          <span>{goalLabel.get(r.goalId) ?? `Goal ${r.goalId}`}</span>
-                          <div className="flex items-center gap-2">
-                            {r.tally.prompted > 0 && (
-                              <Badge variant="secondary" className="font-normal">
-                                {r.tally.prompted} prompted
-                              </Badge>
-                            )}
-                            <span
-                              className="rounded-full px-2 py-0.5 text-xs font-semibold"
-                              style={{
-                                backgroundColor: st?.color ?? "#0E9594",
-                                color: "#fff",
-                              }}
-                            >
-                              {acc}% ({r.tally.correct}/{r.tally.trials})
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
+      <Card>
+        <CardContent className="py-6 text-center text-sm text-muted-foreground">
+          Great work — add any notes below and save the session.
+        </CardContent>
+      </Card>
 
       <div className="space-y-1.5">
         <label className="text-sm font-medium">Session notes (optional)</label>
         <Textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder="Observations, follow-ups, behavior notes…"
+          placeholder="Observations, accuracy tallies, follow-ups, behavior notes…"
           data-testid="input-session-notes"
           disabled={saved}
+          rows={5}
         />
       </div>
 
@@ -816,7 +629,7 @@ function Summary({
           size="lg"
           className="w-full"
           onClick={onSave}
-          disabled={saving || rows.length === 0}
+          disabled={saving}
           data-testid="button-save-session"
         >
           <Save className="mr-1 h-5 w-5" />
