@@ -526,6 +526,56 @@ function storyNarrationText(story: any): string {
   return parts.join("\n\n");
 }
 
+// OpenAI TTS caps `input` at 4096 characters per request. For anything longer
+// we split the narration into pieces and stitch the resulting MP3 buffers.
+// MP3 frames are self-contained, so concatenation is a valid MP3.
+const TTS_MAX_INPUT = 3800; // safety buffer under the 4096 cap
+function splitForTTS(text: string, limit = TTS_MAX_INPUT): string[] {
+  if (text.length <= limit) return [text];
+  // Prefer breaking on paragraph (\n\n), then sentence-end, then whitespace, then hard cut.
+  const chunks: string[] = [];
+  const paragraphs = text.split(/\n{2,}/);
+  let buf = "";
+  const flush = () => { if (buf.trim()) chunks.push(buf.trim()); buf = ""; };
+  const pushSentence = (s: string) => {
+    if (s.length > limit) {
+      // Very long sentence: hard-split on whitespace, then character.
+      let remain = s;
+      while (remain.length > limit) {
+        const slice = remain.slice(0, limit);
+        const spaceIdx = slice.lastIndexOf(" ");
+        const cut = spaceIdx > limit * 0.5 ? spaceIdx : limit;
+        if (buf) flush();
+        chunks.push(remain.slice(0, cut).trim());
+        remain = remain.slice(cut).trim();
+      }
+      if (remain) {
+        if (buf.length + 1 + remain.length > limit) flush();
+        buf = buf ? buf + " " + remain : remain;
+      }
+      return;
+    }
+    if (buf.length + 1 + s.length > limit) flush();
+    buf = buf ? buf + " " + s : s;
+  };
+  for (const para of paragraphs) {
+    const p = para.trim();
+    if (!p) continue;
+    if (p.length <= limit) {
+      // Fits as a whole paragraph. Try to append to the current buffer.
+      if (buf.length + 2 + p.length > limit) flush();
+      buf = buf ? buf + "\n\n" + p : p;
+      continue;
+    }
+    // Paragraph too long: break into sentences.
+    if (buf) flush();
+    const sentences = p.split(/(?<=[.!?])\s+/);
+    for (const s of sentences) pushSentence(s.trim());
+  }
+  flush();
+  return chunks;
+}
+
 // Upload an MP3 buffer to the public Supabase Storage bucket; return its public URL.
 async function uploadAudio(objectPath: string, mp3: Buffer): Promise<string> {
   const url = `${SUPABASE_URL}/storage/v1/object/${AUDIO_BUCKET}/${objectPath}`;
@@ -548,32 +598,39 @@ async function uploadAudio(objectPath: string, mp3: Buffer): Promise<string> {
 }
 
 // Generate narration for a story: OpenAI TTS -> upload -> return audio meta.
+// Long stories exceed the 4096-char TTS input cap, so we chunk the text and
+// concatenate the resulting MP3 byte streams before upload.
 async function synthesizeStoryAudio(
   story: any,
   opts: { voice?: string } = {},
-): Promise<{ url: string; voice: string; model: string; chars: number; generated_at: string }> {
+): Promise<{ url: string; voice: string; model: string; chars: number; generated_at: string; parts?: number }> {
   const text = storyNarrationText(story);
   if (!text.trim()) throw new Error("This story has no narrative text to read.");
   const voice = TTS_VOICES.includes(String(opts.voice)) ? String(opts.voice) : DEFAULT_TTS_VOICE;
-  const res = await fetch("https://api.openai.com/v1/audio/speech", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: OPENAI_TTS_MODEL,
-      voice,
-      input: text,
-      response_format: "mp3",
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`OpenAI TTS ${res.status}: ${body}`);
+  const chunks = splitForTTS(text);
+  const buffers: Buffer[] = [];
+  for (const chunk of chunks) {
+    const res = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_TTS_MODEL,
+        voice,
+        input: chunk,
+        response_format: "mp3",
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`OpenAI TTS ${res.status}: ${body}`);
+    }
+    const arrayBuf = await res.arrayBuffer();
+    buffers.push(Buffer.from(arrayBuf));
   }
-  const arrayBuf = await res.arrayBuffer();
-  const mp3 = Buffer.from(arrayBuf);
+  const mp3 = buffers.length === 1 ? buffers[0] : Buffer.concat(buffers);
   const objectPath = `story-${story.id}-${voice}-${Date.now()}.mp3`;
   const publicUrl = await uploadAudio(objectPath, mp3);
   return {
@@ -582,6 +639,7 @@ async function synthesizeStoryAudio(
     model: OPENAI_TTS_MODEL,
     chars: text.length,
     generated_at: new Date().toISOString(),
+    parts: chunks.length,
   };
 }
 
