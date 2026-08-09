@@ -706,19 +706,45 @@ function extractJson(s: string): string {
   return s.trim();
 }
 
-// Tops up under-served goals after generation so rotation targets are actually met.
-// FOCUS goals (priorityIds) target 3 stop-points; every other active goal targets 1.
-// Extra stop-points are cloned from an existing one for that goal (placed on a beat that
-// doesn't already have one, when possible) or synthesized minimally if none exists.
+// Allocate a per-student quota across that student's active goals, biased toward FOCUS goals.
+// Returns Map<goalId, targetCount>. Every goal gets at least 1 (as long as quota >= goalCount);
+// remaining stop-points go to FOCUS goals first, then remaining light goals in order.
+function allocateStudentQuota(
+  studentQuota: number,
+  goals: { id: number; isFocus: boolean }[],
+): Map<number, number> {
+  const targets = new Map<number, number>();
+  if (goals.length === 0) return targets;
+  // Every goal gets a floor of 1 (up to what the quota allows).
+  const baseline = Math.min(1, Math.floor(studentQuota / goals.length));
+  for (const g of goals) targets.set(g.id, baseline);
+  let remaining = studentQuota - baseline * goals.length;
+  // Distribute remainder: FOCUS goals first (round-robin), then light.
+  const focus = goals.filter((g) => g.isFocus);
+  const light = goals.filter((g) => !g.isFocus);
+  const order = [...focus, ...light];
+  let i = 0;
+  while (remaining > 0 && order.length > 0) {
+    const g = order[i % order.length];
+    targets.set(g.id, (targets.get(g.id) ?? 0) + 1);
+    remaining--;
+    i++;
+  }
+  return targets;
+}
+
+// Tops up under-served goals AND trims over-served students so per-student stop-point counts
+// stay as balanced as possible. `perGoalTargets` is authoritative: each goalId maps to how
+// many stop-points its student should have for that goal this session.
 function balanceStopPoints(
   parsed: any,
   ctx: {
-    priorityIds: Set<number>;
+    perGoalTargets: Map<number, number>;
     goalMeta: Map<number, { studentId: number; goalType: string; label: string }>;
     beats: any[];
   },
 ): void {
-  const { priorityIds, goalMeta, beats } = ctx;
+  const { perGoalTargets, goalMeta, beats } = ctx;
   if (!beats.length) return;
   const stops: any[] = parsed.stop_points;
 
@@ -731,8 +757,25 @@ function balanceStopPoints(
       return Number.isFinite(n) && n > max ? n : max;
     }, stops.length) + 1;
 
-  for (const [goalId, meta] of goalMeta) {
-    const target = priorityIds.has(goalId) ? 3 : 1;
+  // 1. Trim over-served goals so no single goal exceeds its target (protects per-student balance).
+  for (const [goalId, target] of perGoalTargets) {
+    let have = countFor(goalId);
+    while (have > target) {
+      // Remove the LAST occurrence of this goal (keeps early practice, drops surplus at the end).
+      const idx = (() => {
+        for (let i = stops.length - 1; i >= 0; i--) if (stops[i].goalId === goalId) return i;
+        return -1;
+      })();
+      if (idx < 0) break;
+      stops.splice(idx, 1);
+      have--;
+    }
+  }
+
+  // 2. Top up under-served goals.
+  for (const [goalId, target] of perGoalTargets) {
+    const meta = goalMeta.get(goalId);
+    if (!meta) continue;
     let have = countFor(goalId);
     if (have >= target) continue;
 
@@ -942,22 +985,34 @@ async function generateStory(
     return `${focus}; ${h.total_trials} trials so far, last practiced ${h.last_session_date ?? "unknown"}`;
   };
 
-  const goalLines = withGoals
-    .map((m) => {
-      const lines = m.goals
-        .map((g) => {
-          allGoalIds.push(g.id);
-          return `    - goalId ${g.id} [${g.goal_type}] "${g.label}": ${g.text} (target: ${g.target_criteria}) [${statusFor(g.id)}]`;
-        })
-        .join("\n");
-      return `  Student "${m.student.name}" (studentId ${m.student.id}, grade ${m.student.grade ?? "?"}):\n${lines}`;
-    })
-    .join("\n");
   const format = opts.format ?? "adventure";
   const tone = opts.tone ?? "playful";
   const length = opts.length ?? "standard";
   const readingLevel = opts.reading_level ?? "auto";
   const spec = LENGTH_SPEC[length];
+
+  // Per-student stop-point quota — every student with active goals gets the same number.
+  // Short=3, standard=5, long=7. This is the source of truth for per-student balance.
+  const studentQuota = length === "long" ? 7 : length === "short" ? 3 : 5;
+  const perGoalTargets = new Map<number, number>();
+  for (const m of withGoals) {
+    const goalsForStudent = m.goals.map((g: any) => ({ id: g.id, isFocus: priorityIds.has(g.id) }));
+    const alloc = allocateStudentQuota(studentQuota, goalsForStudent);
+    for (const [gid, count] of alloc) perGoalTargets.set(gid, count);
+  }
+
+  const goalLines = withGoals
+    .map((m) => {
+      const lines = m.goals
+        .map((g) => {
+          allGoalIds.push(g.id);
+          const target = perGoalTargets.get(g.id) ?? 1;
+          return `    - goalId ${g.id} [${g.goal_type}] "${g.label}": ${g.text} (target: ${g.target_criteria}) [${statusFor(g.id)}] → give EXACTLY ${target} stop-point${target === 1 ? "" : "s"}`;
+        })
+        .join("\n");
+      return `  Student "${m.student.name}" (studentId ${m.student.id}, grade ${m.student.grade ?? "?"}) — TOTAL ${studentQuota} stop-points for this student:\n${lines}`;
+    })
+    .join("\n");
   const fmt = FORMAT_GUIDANCE[format];
   const isNonfiction = format === "informational" || format === "biography" || format === "how_it_works" || format === "news_article";
 
@@ -984,12 +1039,11 @@ ${themeLine}
 THE STUDENTS AND THEIR ACTIVE GOALS:
 ${goalLines}
 
-GOAL ROTATION — each goal above is tagged [FOCUS ...] or [light ...] based on how recently it was
-practiced in past sessions. FOCUS goals are the least-recently-practiced (or never practiced) and need
-the most repetition THIS session. "light" goals were practiced more recently and only need brief review.
-- FOCUS goals: give EXACTLY THREE stop-points each (not two) — this is a hard requirement, spread across different beats for repeated practice.
-- light goals: give EXACTLY ONE stop-point each, so they are still touched but not over-emphasized.
-Before returning, COUNT your stop-points per goalId and confirm every FOCUS goal has 3 and every light goal has 1. Every active goal must appear. Do not under-serve any FOCUS goal.
+STOP-POINT DISTRIBUTION — CRITICAL FAIRNESS RULE:
+Every student with active goals gets EXACTLY ${studentQuota} stop-points in this session — no more, no less.
+This is the top-level constraint. It ensures every student gets equal practice time regardless of how many goals they have.
+The per-goal counts in the goal list above ("→ give EXACTLY N stop-points") sum to ${studentQuota} for each student, with FOCUS goals getting more reps than light goals.
+Before returning, COUNT your stop-points per studentId and confirm EACH student has exactly ${studentQuota}. Then count per goalId and match the target counts. Every active goal must appear at least once.
 
 LENGTH TARGET — IMPORTANT:
 - This piece must fill a FULL ~${spec.minutes}-minute therapy session of reading aloud plus stop-point discussion. Do NOT write a short piece.
@@ -998,7 +1052,7 @@ LENGTH TARGET — IMPORTANT:
 
 REQUIREMENTS:
 - ${isNonfiction ? "FACTUAL ACCURACY: every fact stated must be verifiably true. Do NOT invent statistics, dates, or quotes. If you're unsure of a specific number, phrase it qualitatively (\"most\", \"many scientists believe\") instead of inventing precision." : "FERPA / privacy: the piece's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names."}
-- Follow the GOAL ROTATION rule above for how many stop-points each goal gets (FOCUS goals ≥ 3, light goals ≥ 1). Distribute stop-points across the beats; multiple stop-points may follow the same beat.
+- Follow the STOP-POINT DISTRIBUTION rule above EXACTLY: each student gets ${studentQuota} total, and each goal gets the exact count listed next to it. Distribute stop-points across the beats; multiple stop-points may follow the same beat, but spread each goal's stop-points across different beats when possible.
 - Each stop-point MUST reference concrete words, phrases, or ${isNonfiction ? "facts" : "events"} from the beat it follows (afterBeatId).
 - Tailor each stop-point to its goal type:
     * articulation: give a sentence from the beat to read aloud loaded with the target sound; targetResponse notes which words to score.
@@ -1062,7 +1116,7 @@ Return ONLY valid JSON with this exact shape:
   // FOCUS goals want 3 stop-points, light/other goals want >=1. If the model fell short,
   // top up by cloning an existing stop-point for that goal onto a different beat (so the
   // student still gets the extra rep), or synthesizing a minimal one if none exists yet.
-  balanceStopPoints(parsed, { priorityIds, goalMeta, beats: parsed.beats });
+  balanceStopPoints(parsed, { perGoalTargets, goalMeta, beats: parsed.beats });
 
   parsed.target_goal_ids = Array.from(
     new Set(parsed.stop_points.map((s: any) => s.goalId).filter(Boolean)),
