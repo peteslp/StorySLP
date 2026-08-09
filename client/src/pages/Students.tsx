@@ -344,7 +344,6 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
   const goals = goalsQ.data ?? [];
 
   const [editing, setEditing] = useState<Goal | null>(null);
-  const [label, setLabel] = useState("");
   const [text, setText] = useState("");
   const [goalType, setGoalType] = useState<string>(GOAL_TYPES[0]);
   const [criteria, setCriteria] = useState("80%");
@@ -357,7 +356,6 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
 
   const resetForm = () => {
     setEditing(null);
-    setLabel("");
     setText("");
     setGoalType(GOAL_TYPES[0]);
     setCriteria("80%");
@@ -370,7 +368,6 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
   };
   const openEdit = (g: Goal) => {
     setEditing(g);
-    setLabel(g.label);
     setText(g.text);
     setGoalType(g.goal_type);
     setCriteria(g.target_criteria);
@@ -380,9 +377,9 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
 
   const save = useMutation({
     mutationFn: async () => {
+      // Label is auto-derived server-side from goal text + type. We no longer collect it.
       const body = {
         student_id: student.id,
-        label,
         text,
         goal_type: goalType,
         target_criteria: criteria,
@@ -448,15 +445,14 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{g.label}</span>
-                      <Badge variant="outline" className="font-normal">
+                      <Badge variant="outline" className="font-medium">
                         {goalTypeLabel(g.goal_type)}
                       </Badge>
                       <Badge variant="secondary" className="font-normal">
                         {g.target_criteria}
                       </Badge>
                     </div>
-                    <p className="mt-1 text-sm text-muted-foreground">{g.text}</p>
+                    <p className="mt-1 text-sm text-foreground">{g.text}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <Switch
@@ -490,16 +486,6 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
 
         {showForm ? (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="goal-label">Label</Label>
-              <Input
-                id="goal-label"
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="e.g. Context-clue vocabulary"
-                data-testid="input-goal-label"
-              />
-            </div>
             <div className="space-y-1.5">
               <Label htmlFor="goal-text">Full goal text</Label>
               <Textarea
@@ -558,7 +544,7 @@ function GoalManager({ student, onClose }: { student: Student; onClose: () => vo
               </Button>
               <Button
                 onClick={() => save.mutate()}
-                disabled={!label.trim() || !text.trim() || save.isPending}
+                disabled={!text.trim() || save.isPending}
                 data-testid="button-save-goal"
               >
                 {save.isPending ? "Saving…" : editing ? "Save goal" : "Add goal"}
@@ -609,6 +595,7 @@ type ProgressSession = {
 type ProgressGoal = {
   goal_id: number;
   label: string;
+  text?: string;
   goal_type: string;
   target_criteria: string;
   active: boolean;
@@ -695,7 +682,7 @@ function StudentProgress({
                       <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
                         {goalTypeLabel(g.goal_type)}
                       </span>
-                      <p className="truncate font-medium">{g.label}</p>
+                      <p className="line-clamp-2 font-medium">{g.text || g.label}</p>
                       <p className="text-xs text-muted-foreground">
                         Target {g.target_criteria}
                       </p>

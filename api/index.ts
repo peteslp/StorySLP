@@ -488,6 +488,7 @@ const storage = {
       return {
         goal_id: g.id,
         label: g.label,
+        text: g.text,
         goal_type: g.goal_type,
         target_criteria: g.target_criteria,
         active: g.active,
@@ -708,6 +709,158 @@ function extractJson(s: string): string {
   const end = s.lastIndexOf("}");
   if (start >= 0 && end > start) return s.slice(start, end + 1);
   return s.trim();
+}
+
+// Derive a short label for a goal from its text + type, used when the label field
+// is not provided by the form. Prefer a concrete target from the goal text
+// (e.g. "/v/ articulation"), otherwise fall back to a Title-Cased goal type.
+function deriveGoalLabel(g: { goal_type?: string; text?: string }): string {
+  const concrete = extractConcreteTarget(g);
+  const type = String(g.goal_type || "").trim();
+  const typeLabel = type
+    ? type.charAt(0).toUpperCase() + type.slice(1).replace(/_/g, " ")
+    : "Goal";
+  if (concrete) return `${concrete} — ${typeLabel}`;
+  return typeLabel;
+}
+
+// Parse the goal's full text to find the concrete target the student is working on.
+// This gives the model an unambiguous handle so it doesn't fall back to generic prompts
+// like "Practice the target for [goal_type]".
+function extractConcreteTarget(g: {
+  goal_type?: string;
+  text?: string;
+  label?: string;
+}): string | null {
+  const t = String(g.text || "").toLowerCase();
+  if (!t) return null;
+  const type = String(g.goal_type || "").toLowerCase();
+
+  // Articulation: look for /X/ phonemes, blend patterns, and vocalic variants.
+  if (type === "articulation" || type === "phonology") {
+    const sounds: string[] = [];
+    // Match /r/ /v/ /th/ /ch/ /sh/ /s/-blend etc.
+    const soundRe = /\/([a-zA-Z]{1,4})\/(-blend|-blends|s|s\/-blends|s\/? blends)?/g;
+    let m: RegExpExecArray | null;
+    while ((m = soundRe.exec(t))) {
+      const core = m[1];
+      const suffix = m[2] ? m[2].replace(/[/]/g, "").replace(/\s+/g, "-") : "";
+      sounds.push(`/${core}/${suffix ? " " + suffix : ""}`);
+    }
+    // Vocalic /r/ variants (e.g. "vocalic /r/", "ar, er, ir, or, ur")
+    if (/vocalic \/r\/|vocalic r\b/.test(t)) sounds.push("vocalic /r/");
+    // Named phonological processes
+    const patterns: Array<[RegExp, string]> = [
+      [/\bfronting\b/, "fronting (e.g. /k/→/t/, /g/→/d/)"],
+      [/\bgliding\b/, "gliding of liquids (/r/→/w/, /l/→/w/)"],
+      [/cluster reduction/, "cluster reduction"],
+      [/final consonant deletion/, "final consonant deletion"],
+      [/stopping/, "stopping of fricatives"],
+      [/backing/, "backing"],
+      [/syllable omission|weak syllable deletion/, "weak syllable deletion"],
+    ];
+    for (const [re, label] of patterns) if (re.test(t)) sounds.push(label);
+    // Word position hints (initial / medial / final / all)
+    const positions: string[] = [];
+    if (/\ball (word )?positions?\b/.test(t)) positions.push("all positions");
+    else {
+      if (/\binitial\b/.test(t)) positions.push("initial");
+      if (/\bmedial\b/.test(t)) positions.push("medial");
+      if (/\bfinal\b/.test(t)) positions.push("final");
+    }
+    // Complexity level (word / phrase / sentence / conversation)
+    const levels: string[] = [];
+    for (const lvl of ["word", "phrase", "sentence", "conversation", "structured", "spontaneous"]) {
+      if (new RegExp(`\\b${lvl}( level)?\\b`).test(t)) levels.push(lvl);
+    }
+    if (sounds.length === 0) return null;
+    const parts = [sounds.join(", ")];
+    if (positions.length) {
+      const isAll = positions.length === 1 && positions[0] === "all positions";
+      parts.push(isAll ? "in all word positions" : `in ${positions.join("/")} position${positions.length > 1 ? "s" : ""}`);
+    }
+    if (levels.length) parts.push(`at ${levels.join("/")} level`);
+    return parts.join(" ");
+  }
+
+  // Fluency: name the strategy.
+  if (type === "fluency") {
+    const strategies = [
+      "easy onset",
+      "pull-out",
+      "cancellation",
+      "light articulatory contact",
+      "prolongation",
+      "pausing",
+      "slowed rate",
+      "stretched speech",
+      "deep breathing",
+    ];
+    const found = strategies.filter((s) => t.includes(s));
+    return found.length ? found.join(", ") : null;
+  }
+
+  // Voice: quality target.
+  if (type === "voice") {
+    const qualities = [
+      "loudness",
+      "resonance",
+      "gentle onset",
+      "easy phonation",
+      "vocal hygiene",
+      "pitch",
+      "breath support",
+    ];
+    const found = qualities.filter((s) => t.includes(s));
+    return found.length ? found.join(", ") : null;
+  }
+
+  // Grammar: named structures.
+  if (type === "grammar") {
+    const structures = [
+      "pronouns",
+      "personal pronouns",
+      "possessive pronouns",
+      "reflexive pronouns",
+      "past tense",
+      "present tense",
+      "future tense",
+      "irregular past tense",
+      "subject-verb agreement",
+      "plurals",
+      "passive voice",
+      "active voice",
+      "conjunctions",
+      "prepositions",
+      "articles",
+      "auxiliary verbs",
+    ];
+    const found = structures.filter((s) => t.includes(s));
+    return found.length ? found.join(", ") : null;
+  }
+
+  // Pragmatics: named skills.
+  if (type === "pragmatics") {
+    const skills = [
+      "topic maintenance",
+      "topic initiation",
+      "turn-taking",
+      "perspective-taking",
+      "conversational repair",
+      "asking questions",
+      "giving compliments",
+      "greeting",
+      "eye contact",
+      "nonverbal cues",
+      "inferring feelings",
+      "indirect language",
+      "figurative language",
+    ];
+    const found = skills.filter((s) => t.includes(s));
+    return found.length ? found.join(", ") : null;
+  }
+
+  return null;
 }
 
 // Allocate a per-student quota across that student's active goals, biased toward FOCUS goals.
@@ -1011,7 +1164,11 @@ async function generateStory(
         .map((g) => {
           allGoalIds.push(g.id);
           const target = perGoalTargets.get(g.id) ?? 1;
-          return `    - goalId ${g.id} [${g.goal_type}] "${g.label}": ${g.text} (target: ${g.target_criteria}) [${statusFor(g.id)}] → give EXACTLY ${target} stop-point${target === 1 ? "" : "s"}`;
+          const concreteTarget = extractConcreteTarget(g);
+          const targetLine = concreteTarget
+            ? `\n        CONCRETE TARGET (use this in every stop-point for this goal): ${concreteTarget}`
+            : "";
+          return `    - goalId ${g.id} [${g.goal_type}] → give EXACTLY ${target} stop-point${target === 1 ? "" : "s"} [${statusFor(g.id)}]\n        FULL GOAL TEXT: ${g.text}\n        CRITERIA: ${g.target_criteria}${targetLine}`;
         })
         .join("\n");
       return `  Student "${m.student.name}" (studentId ${m.student.id}, grade ${m.student.grade ?? "?"}) — TOTAL ${studentQuota} stop-points for this student:\n${lines}`;
@@ -1058,15 +1215,18 @@ REQUIREMENTS:
 - ${isNonfiction ? "FACTUAL ACCURACY: every fact stated must be verifiably true. Do NOT invent statistics, dates, or quotes. If you're unsure of a specific number, phrase it qualitatively (\"most\", \"many scientists believe\") instead of inventing precision." : "FERPA / privacy: the piece's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names."}
 - Follow the STOP-POINT DISTRIBUTION rule above EXACTLY: each student gets ${studentQuota} total, and each goal gets the exact count listed next to it. Distribute stop-points across the beats; multiple stop-points may follow the same beat, but spread each goal's stop-points across different beats when possible.
 - Each stop-point MUST reference concrete words, phrases, or ${isNonfiction ? "facts" : "events"} from the beat it follows (afterBeatId).
+- Each stop-point MUST use the goal's CONCRETE TARGET (specific sound, specific structure, specific skill) from the goal list above. Read the FULL GOAL TEXT and pull out the exact target the student is working on.
+- FORBIDDEN: NEVER write generic prompts like "Practice the target for [goal_type]" or "Use a moment from this scene" or "Student demonstrates the goal at the expected level". Every stop-point question and targetResponse must name the specific sound, structure, word, or skill from the goal text.
 - Tailor each stop-point to its goal type:
-    * articulation: give a sentence from the beat to read aloud loaded with the target sound; targetResponse notes which words to score.
+    * articulation: The goal text names a SPECIFIC SOUND (e.g. /v/, /r/, /th/, /s/-blends, /k/ vs /t/ for fronting). You MUST use that exact sound. Choose or invent a phrase from the beat that is loaded with that sound and have the student read it. Example question: "Read this sentence and say your /v/ words carefully: 'Vera visited the vast valley.' Which /v/ words did you say?" targetResponse lists the exact target-sound words to score.
+    * phonology: The goal text names a specific phonological pattern (fronting, gliding, cluster reduction, final consonant deletion). Target that exact pattern in the beat's words.
+    * fluency: The goal text names a specific strategy (easy onset, pull-out, cancellation, light articulatory contact). Have the student use that named strategy.
+    * voice: The goal text names a specific voice quality (loudness, resonance, gentle onset, easy phonation). Cue that exact quality.
     * vocabulary: ask the student to infer a Tier-2 word's meaning using sentence context.
     * language: work with figurative language, sentence structure, or word relationships in the beat.
     * grammar: read a passive-voice sentence and ask them to restate in active voice, or work on verb tense, subject-verb agreement, pronouns, etc.
-    * fluency: ask the student to read a phrase from the beat aloud using their fluency strategy (easy onset, pull-out, etc.).
-    * pragmatics: use a social situation in the beat to work on perspective-taking, indirect language, or conversational skills.
+    * pragmatics: use a social situation in the beat to work on perspective-taking, indirect language, or conversational skills. Reference the specific pragmatic skill from the goal text (topic maintenance, turn-taking, etc.).
     * comprehension: read a complex/embedded sentence or short passage from the beat and ask for the main idea, inference, or a summary.
-    * voice: ask the student to read a phrase from the beat using their target voice quality (loudness, resonance, gentle onset).
     * aac: give a communication opportunity tied to the beat and note which vocabulary the student should navigate to on their device.
 - responseType is "open" for most; use "choice" with a "choices" array (3 options) where a multiple-choice check fits.
 - Each stop-point includes: question (to the student), targetResponse (for the clinician), teachingNote (a quick scaffold).
@@ -1273,8 +1433,13 @@ export default async function handler(req: any, res: any) {
     if (seg[0] === "goals") {
       if (seg.length === 1 && method === "POST") {
         const b = await readBody(req);
-        if (!b.student_id || !b.label || !b.text || !b.goal_type || !b.target_criteria)
-          return json(res, 400, { error: "student_id, label, text, goal_type, target_criteria required" });
+        if (!b.student_id || !b.text || !b.goal_type || !b.target_criteria)
+          return json(res, 400, { error: "student_id, text, goal_type, target_criteria required" });
+        // Label is no longer required on the form. Derive one so DB "NOT NULL" columns
+        // (and any existing consumers that still read .label) keep working.
+        if (!b.label || !String(b.label).trim()) {
+          b.label = deriveGoalLabel(b);
+        }
         return json(res, 200, await storage.createGoal(b));
       }
       const id = Number(seg[1]);
