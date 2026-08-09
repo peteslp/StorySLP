@@ -13,8 +13,16 @@ import {
   Pause,
   Loader2,
   Images,
+  Lightbulb,
+  BookOpenCheck,
 } from "lucide-react";
-import type { Story, Student, StopPoint, ComicPanel } from "@shared/schema";
+import type {
+  Story,
+  Student,
+  StopPoint,
+  ComicPanel,
+  ComprehensionQuestion,
+} from "@shared/schema";
 import { useComic } from "@/lib/useComic";
 import { StudentChip } from "@/components/StudentChip";
 import { Card, CardContent } from "@/components/ui/card";
@@ -158,13 +166,21 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
     return out;
   }, [beats, story.stop_points]);
 
-  // step index into `steps`; when >= steps.length we're at the summary
+  // Whole-group comprehension questions read at the end of the story.
+  const comprehension = story.comprehension_questions || [];
+  const hasComprehension = comprehension.length > 0;
+
+  // Phase layout:
+  //   0 .. steps.length-1                    -> stop-points
+  //   steps.length                            -> comprehension check (if any)
+  //   steps.length + (hasComprehension ? 1:0) -> summary
   const [stepIdx, setStepIdx] = useState(0);
   const [notes, setNotes] = useState("");
   const [saved, setSaved] = useState(false);
 
-  const atSummary = stepIdx >= steps.length;
-  const current = atSummary ? null : steps[stepIdx];
+  const atComprehension = hasComprehension && stepIdx === steps.length;
+  const atSummary = stepIdx >= steps.length + (hasComprehension ? 1 : 0);
+  const current = !atComprehension && !atSummary ? steps[stepIdx] : null;
   const currentBeat = current ? beats[current.beatIndex] : null;
 
   const save = useMutation({
@@ -192,7 +208,7 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
       toast({ title: "Could not save session", description: e.message, variant: "destructive" }),
   });
 
-  const progressBeat = atSummary
+  const progressBeat = atSummary || atComprehension
     ? totalBeats
     : (current?.beatIndex ?? 0) + 1;
 
@@ -206,7 +222,11 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
               {story.title}
             </div>
             <div className="text-xs text-muted-foreground" data-testid="text-runner-progress">
-              {atSummary ? "Summary" : `Scene ${progressBeat} of ${totalBeats}`}
+              {atSummary
+                ? "Summary"
+                : atComprehension
+                  ? "Comprehension check"
+                  : `Scene ${progressBeat} of ${totalBeats}`}
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -225,7 +245,13 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
           </div>
         </div>
         <Progress
-          value={atSummary ? 100 : (progressBeat / Math.max(totalBeats, 1)) * 100}
+          value={
+            atSummary
+              ? 100
+              : atComprehension
+                ? 100
+                : (progressBeat / Math.max(totalBeats, 1)) * 100
+          }
           className="h-1 rounded-none"
         />
       </div>
@@ -255,9 +281,15 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
             saving={save.isPending}
             saved={saved}
           />
+        ) : atComprehension ? (
+          <ComprehensionCheck
+            questions={comprehension}
+            onDone={() => setStepIdx((i) => i + 1)}
+          />
         ) : (
           current &&
           currentBeat && (
+
             <div className="space-y-6">
               {/* Beat text + inline comic panel (visible on all screen sizes) */}
               <div>
@@ -293,7 +325,11 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
                   onClick={() => setStepIdx((i) => i + 1)}
                   data-testid="button-next"
                 >
-                  {stepIdx === steps.length - 1 ? "Finish" : "Next"}
+                  {stepIdx === steps.length - 1
+                    ? hasComprehension
+                      ? "Comprehension check"
+                      : "Finish"
+                    : "Next"}
                   <ChevronRight className="ml-1 h-5 w-5" />
                 </Button>
               </div>
@@ -566,6 +602,107 @@ function StopPointRunner({
         </Collapsible>
       </CardContent>
     </Card>
+  );
+}
+
+function COMPREHENSION_TYPE_LABEL(t: ComprehensionQuestion["type"]) {
+  switch (t) {
+    case "main_idea":
+      return "Main idea";
+    case "sequence":
+      return "Sequence";
+    case "inference":
+      return "Inference";
+    case "vocabulary":
+      return "Vocabulary";
+    case "theme":
+      return "Theme / character";
+    default:
+      return "Comprehension";
+  }
+}
+
+function ComprehensionCheck({
+  questions,
+  onDone,
+}: {
+  questions: ComprehensionQuestion[];
+  onDone: () => void;
+}) {
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-2">
+        <BookOpenCheck className="h-6 w-6 text-primary" />
+        <div>
+          <h1 className="font-display text-xl font-bold">Comprehension check</h1>
+          <p className="text-sm text-muted-foreground">
+            Ask the group these {questions.length} questions about the whole story.
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {questions.map((q, i) => {
+          const isRevealed = !!revealed[q.id];
+          return (
+            <Card key={q.id} data-testid={`card-comprehension-${q.id}`}>
+              <CardContent className="space-y-3 py-5">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-semibold text-muted-foreground">
+                    {i + 1}
+                  </span>
+                  <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
+                    {COMPREHENSION_TYPE_LABEL(q.type)}
+                  </Badge>
+                </div>
+                <p
+                  className="font-display text-base leading-relaxed text-foreground"
+                  data-testid={`text-comprehension-question-${q.id}`}
+                >
+                  {q.question}
+                </p>
+                {q.targetResponse ? (
+                  isRevealed ? (
+                    <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
+                      <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-primary">
+                        <Lightbulb className="h-3.5 w-3.5" />
+                        Target response
+                      </div>
+                      <p
+                        className="text-sm text-foreground"
+                        data-testid={`text-comprehension-target-${q.id}`}
+                      >
+                        {q.targetResponse}
+                      </p>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setRevealed((r) => ({ ...r, [q.id]: true }))
+                      }
+                      data-testid={`button-reveal-comprehension-${q.id}`}
+                    >
+                      <Lightbulb className="mr-1 h-4 w-4" />
+                      Show target response
+                    </Button>
+                  )
+                ) : null}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      <div className="flex justify-end">
+        <Button size="lg" onClick={onDone} data-testid="button-finish-comprehension">
+          Finish
+          <ChevronRight className="ml-1 h-5 w-5" />
+        </Button>
+      </div>
+    </div>
   );
 }
 

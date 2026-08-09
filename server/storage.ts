@@ -64,6 +64,7 @@ function parseStoryRow(r: any): Story {
     est_minutes: r.est_minutes,
     beats: safeParse<Beat[]>(r.beats_json, []),
     stop_points: safeParse<StopPoint[]>(r.stop_points_json, []),
+    comprehension_questions: safeParse<any[]>(r.comprehension_json, []),
     target_goal_ids: safeParse<number[]>(r.target_goal_ids_json, []),
     audio_status: r.audio_status,
     audio: safeParse<any>(r.audio_json, {}),
@@ -248,6 +249,7 @@ export const storage = {
         est_minutes: input.est_minutes,
         beats_json: JSON.stringify(input.beats),
         stop_points_json: JSON.stringify(input.stop_points),
+        comprehension_json: JSON.stringify(input.comprehension_questions ?? []),
         target_goal_ids_json: JSON.stringify(input.target_goal_ids),
         audio_status: "none",
         audio_json: "{}",
@@ -264,6 +266,8 @@ export const storage = {
     if (input.est_minutes !== undefined) patch.est_minutes = input.est_minutes;
     if (input.beats !== undefined) patch.beats_json = JSON.stringify(input.beats);
     if (input.stop_points !== undefined) patch.stop_points_json = JSON.stringify(input.stop_points);
+    if (input.comprehension_questions !== undefined)
+      patch.comprehension_json = JSON.stringify(input.comprehension_questions);
     if (input.target_goal_ids !== undefined)
       patch.target_goal_ids_json = JSON.stringify(input.target_goal_ids);
     const rows = await sb<any[]>(`/stories?id=eq.${id}`, {

@@ -108,6 +108,7 @@ function parseStoryRow(r: any) {
     est_minutes: r.est_minutes,
     beats: safeParse<any[]>(r.beats_json, []),
     stop_points: safeParse<any[]>(r.stop_points_json, []),
+    comprehension_questions: safeParse<any[]>(r.comprehension_json, []),
     target_goal_ids: safeParse<number[]>(r.target_goal_ids_json, []),
     audio_status: r.audio_status,
     audio: safeParse<any>(r.audio_json, {}),
@@ -274,6 +275,7 @@ const storage = {
         est_minutes: input.est_minutes ?? 15,
         beats_json: JSON.stringify(input.beats ?? []),
         stop_points_json: JSON.stringify(input.stop_points ?? []),
+        comprehension_json: JSON.stringify(input.comprehension_questions ?? []),
         target_goal_ids_json: JSON.stringify(input.target_goal_ids ?? []),
         audio_status: "none",
         audio_json: "{}",
@@ -290,6 +292,8 @@ const storage = {
     if (input.est_minutes !== undefined) patch.est_minutes = input.est_minutes;
     if (input.beats !== undefined) patch.beats_json = JSON.stringify(input.beats);
     if (input.stop_points !== undefined) patch.stop_points_json = JSON.stringify(input.stop_points);
+    if (input.comprehension_questions !== undefined)
+      patch.comprehension_json = JSON.stringify(input.comprehension_questions);
     if (input.target_goal_ids !== undefined)
       patch.target_goal_ids_json = JSON.stringify(input.target_goal_ids);
     const rows = await sb<any[]>(`/stories?id=eq.${id}`, {
@@ -1067,6 +1071,12 @@ REQUIREMENTS:
 - responseType is "open" for most; use "choice" with a "choices" array (3 options) where a multiple-choice check fits.
 - Each stop-point includes: question (to the student), targetResponse (for the clinician), teachingNote (a quick scaffold).
 
+END-OF-STORY COMPREHENSION QUESTIONS:
+After the beats and stop-points, add EXACTLY 5 whole-story comprehension questions in the "comprehension_questions" array. These are asked to the WHOLE GROUP at the end after all beats are read, to check overall understanding of the piece.
+- Cover a mix of question types across the 5: at least one main_idea ("What was this ${isNonfiction ? "piece" : "story"} mostly about?"), one sequence ("What happened first / next / last?"), one inference (a why/how question that requires connecting details), one vocabulary (define or use a Tier-2 word from the piece), and one theme/character question (${isNonfiction ? "key takeaway or why-it-matters" : "lesson, character motivation, or theme"}).
+- Questions should require the student to think about the WHOLE piece, not just one beat.
+- Provide a targetResponse for the clinician for each.
+
 Return ONLY valid JSON with this exact shape:
 {
   "title": "string",
@@ -1074,6 +1084,13 @@ Return ONLY valid JSON with this exact shape:
   "beats": [{"id":"b1","text":"..."}],
   "stop_points": [
     {"id":"s1","afterBeatId":"b1","studentId":0,"goalId":0,"goalType":"<type>","question":"...","targetResponse":"...","teachingNote":"...","responseType":"open"}
+  ],
+  "comprehension_questions": [
+    {"id":"c1","type":"main_idea","question":"...","targetResponse":"..."},
+    {"id":"c2","type":"sequence","question":"...","targetResponse":"..."},
+    {"id":"c3","type":"inference","question":"...","targetResponse":"..."},
+    {"id":"c4","type":"vocabulary","question":"...","targetResponse":"..."},
+    {"id":"c5","type":"theme","question":"...","targetResponse":"..."}
   ]
 }`;
 
@@ -1111,6 +1128,14 @@ Return ONLY valid JSON with this exact shape:
     afterBeatId: beatIds.has(s.afterBeatId) ? s.afterBeatId : parsed.beats[0]?.id,
     responseType: s.responseType === "choice" ? "choice" : "open",
   }));
+  // Normalize comprehension questions: ensure IDs, valid types, and pad to 5 if under-served.
+  const validCompTypes = new Set(["main_idea", "sequence", "inference", "vocabulary", "theme"]);
+  parsed.comprehension_questions = (parsed.comprehension_questions || []).map((q: any, i: number) => ({
+    id: q.id || `c${i + 1}`,
+    type: validCompTypes.has(q.type) ? q.type : "main_idea",
+    question: q.question || "",
+    targetResponse: q.targetResponse || "",
+  }));
 
   // --- Light balancing pass: enforce rotation targets the model may have under-served. ---
   // FOCUS goals want 3 stop-points, light/other goals want >=1. If the model fell short,
@@ -1146,6 +1171,7 @@ async function generateForGroup(
     est_minutes: gen.est_minutes,
     beats: gen.beats,
     stop_points: gen.stop_points,
+    comprehension_questions: gen.comprehension_questions,
     target_goal_ids: gen.target_goal_ids,
   });
 }

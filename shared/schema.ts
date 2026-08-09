@@ -55,6 +55,13 @@ export interface Beat {
   text: string;
 }
 
+export interface ComprehensionQuestion {
+  id: string;
+  type: "main_idea" | "sequence" | "inference" | "vocabulary" | "theme";
+  question: string;
+  targetResponse: string;
+}
+
 export interface Story {
   id: number;
   group_id: number;
@@ -63,6 +70,7 @@ export interface Story {
   est_minutes: number;
   beats: Beat[];
   stop_points: StopPoint[];
+  comprehension_questions: ComprehensionQuestion[];
   target_goal_ids: number[];
   audio_status: string;
   audio: StoryAudio;
@@ -137,6 +145,7 @@ export interface CreateStoryInput {
   est_minutes: number;
   beats: Beat[];
   stop_points: StopPoint[];
+  comprehension_questions?: ComprehensionQuestion[];
   target_goal_ids: number[];
   status?: "draft" | "approved";
 }
