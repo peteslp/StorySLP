@@ -948,78 +948,152 @@ function allocateStudentQuota(
   return targets;
 }
 
-// Tops up under-served goals AND trims over-served students so per-student stop-point counts
-// stay as balanced as possible. `perGoalTargets` is authoritative: each goalId maps to how
-// many stop-points its student should have for that goal this session.
+// Given K stop-point moments and a list of beats, pick K evenly-spaced beat IDs to be
+// the pause points. Skip beat 0 so the story sets up before the first pause.
+function pickStopBeatIds(beats: any[], k: number): string[] {
+  if (beats.length === 0 || k <= 0) return [];
+  if (beats.length <= k) return beats.map((b) => b.id);
+  const first = 1;
+  const last = beats.length - 1;
+  const span = last - first;
+  const out: string[] = [];
+  for (let i = 0; i < k; i++) {
+    const t = k === 1 ? 0.5 : i / (k - 1);
+    const idx = Math.round(first + span * t);
+    const beatId = beats[Math.max(0, Math.min(beats.length - 1, idx))].id;
+    if (!out.includes(beatId)) out.push(beatId);
+  }
+  // If rounding collapsed duplicates, fill with the next unused beat forward.
+  if (out.length < k) {
+    for (const b of beats) {
+      if (out.length >= k) break;
+      if (!out.includes(b.id)) out.push(b.id);
+    }
+  }
+  return out.sort(
+    (a, b) => beats.findIndex((x) => x.id === a) - beats.findIndex((x) => x.id === b),
+  );
+}
+
+// For each student, produce a length-K sequence of goalIds to target across the K stop-beats.
+// FOCUS goals appear more often than light goals. Every active goal appears at least once
+// (as long as k >= goalCount). Goals are interleaved so the same goal isn't repeated back-to-back.
+function buildStudentGoalRotation(
+  studentGoals: { id: number; isFocus: boolean }[],
+  k: number,
+): number[] {
+  if (studentGoals.length === 0 || k === 0) return [];
+  // Allocate per-goal counts summing to k. Each goal gets a baseline, remainder goes FOCUS-first.
+  const perGoal = new Map<number, number>();
+  const baseline = Math.floor(k / studentGoals.length);
+  for (const g of studentGoals) perGoal.set(g.id, baseline);
+  let remaining = k - baseline * studentGoals.length;
+  const focus = studentGoals.filter((g) => g.isFocus);
+  const light = studentGoals.filter((g) => !g.isFocus);
+  const order = [...focus, ...light];
+  let i = 0;
+  while (remaining > 0 && order.length > 0) {
+    const g = order[i % order.length];
+    perGoal.set(g.id, (perGoal.get(g.id) ?? 0) + 1);
+    remaining--;
+    i++;
+  }
+  // Interleave by round-robin so goals are spread across the K moments, not clumped.
+  const sequence: number[] = [];
+  const cursor = new Map<number, number>();
+  for (const g of order) cursor.set(g.id, perGoal.get(g.id) ?? 0);
+  while (sequence.length < k) {
+    let placed = false;
+    for (const g of order) {
+      if (sequence.length >= k) break;
+      const left = cursor.get(g.id) ?? 0;
+      if (left > 0) {
+        sequence.push(g.id);
+        cursor.set(g.id, left - 1);
+        placed = true;
+      }
+    }
+    if (!placed) break; // safety: nothing left to place
+  }
+  return sequence.slice(0, k);
+}
+
+// Enforce the slot plan: at every designated stop-beat, every student with active goals
+// must have exactly one stop-point on their assigned goal for that beat. Trims duplicates,
+// synthesizes missing slots, and reassigns anything the model put in the wrong place.
 function balanceStopPoints(
   parsed: any,
   ctx: {
-    perGoalTargets: Map<number, number>;
+    slotPlan: Array<{ afterBeatId: string; studentId: number; goalId: number }>;
     goalMeta: Map<number, { studentId: number; goalType: string; label: string }>;
     beats: any[];
   },
 ): void {
-  const { perGoalTargets, goalMeta, beats } = ctx;
-  if (!beats.length) return;
+  const { slotPlan, goalMeta, beats } = ctx;
+  if (!beats.length || slotPlan.length === 0) {
+    parsed.stop_points = [];
+    return;
+  }
   const stops: any[] = parsed.stop_points;
-
-  const countFor = (goalId: number) => stops.filter((s) => s.goalId === goalId).length;
-  const beatsUsedBy = (goalId: number) =>
-    new Set(stops.filter((s) => s.goalId === goalId).map((s) => s.afterBeatId));
   let nextIdNum =
     stops.reduce((max, s) => {
       const n = Number(String(s.id || "").replace(/^s/, ""));
       return Number.isFinite(n) && n > max ? n : max;
     }, stops.length) + 1;
 
-  // 1. Trim over-served goals so no single goal exceeds its target (protects per-student balance).
-  for (const [goalId, target] of perGoalTargets) {
-    let have = countFor(goalId);
-    while (have > target) {
-      // Remove the LAST occurrence of this goal (keeps early practice, drops surplus at the end).
-      const idx = (() => {
-        for (let i = stops.length - 1; i >= 0; i--) if (stops[i].goalId === goalId) return i;
-        return -1;
-      })();
-      if (idx < 0) break;
-      stops.splice(idx, 1);
-      have--;
-    }
+  // Index candidates by (studentId, goalId) so we can pick the best model output for each slot.
+  const remaining = new Map<string, any[]>();
+  for (const s of stops) {
+    const key = `${s.studentId}::${s.goalId}`;
+    if (!remaining.has(key)) remaining.set(key, []);
+    remaining.get(key)!.push(s);
   }
 
-  // 2. Top up under-served goals.
-  for (const [goalId, target] of perGoalTargets) {
-    const meta = goalMeta.get(goalId);
-    if (!meta) continue;
-    let have = countFor(goalId);
-    if (have >= target) continue;
-
-    const template = stops.find((s) => s.goalId === goalId);
-    while (have < target) {
-      // Prefer a beat this goal isn't already on, to spread practice across the story.
-      const used = beatsUsedBy(goalId);
-      const freeBeat = beats.find((b) => !used.has(b.id)) || beats[have % beats.length];
-      const clone = template
-        ? { ...template }
-        : {
-            goalId,
-            studentId: meta.studentId,
-            goalType: meta.goalType,
-            question: `Practice the target for "${meta.label}" using a moment from this scene.`,
-            targetResponse: `Student demonstrates the "${meta.label}" goal at the expected level.`,
-            teachingNote: "Cue the target and give one example before the student responds.",
-            responseType: "open",
-          };
-      clone.id = `s${nextIdNum++}`;
-      clone.afterBeatId = freeBeat?.id || beats[0].id;
-      stops.push(clone);
-      have++;
+  const filled: any[] = [];
+  for (const slot of slotPlan) {
+    const key = `${slot.studentId}::${slot.goalId}`;
+    const bucket = remaining.get(key) || [];
+    // Prefer a candidate the model already placed on the correct beat.
+    let idx = bucket.findIndex((s) => s.afterBeatId === slot.afterBeatId);
+    if (idx < 0 && bucket.length > 0) idx = 0;
+    if (idx >= 0) {
+      const pick = bucket.splice(idx, 1)[0];
+      pick.id = pick.id || `s${nextIdNum++}`;
+      pick.afterBeatId = slot.afterBeatId;
+      pick.studentId = slot.studentId;
+      pick.goalId = slot.goalId;
+      const meta = goalMeta.get(slot.goalId);
+      if (meta) pick.goalType = pick.goalType || meta.goalType;
+      pick.responseType = pick.responseType === "choice" ? "choice" : "open";
+      filled.push(pick);
+      continue;
     }
+    // Synthesize a minimal placeholder for a missing slot. The model normally covers this;
+    // this is a safety net so the schedule is never incomplete.
+    const meta = goalMeta.get(slot.goalId);
+    filled.push({
+      id: `s${nextIdNum++}`,
+      afterBeatId: slot.afterBeatId,
+      studentId: slot.studentId,
+      goalId: slot.goalId,
+      goalType: meta?.goalType || "language",
+      question: `Use a moment from this scene to work on the goal target.`,
+      targetResponse: meta?.label
+        ? `Student demonstrates the "${meta.label}" goal at the expected level.`
+        : "Student demonstrates the goal at the expected level.",
+      teachingNote: "Cue the target and give one example before the student responds.",
+      responseType: "open",
+    });
   }
 
-  // Keep stop-points ordered by their beat position for a clean read-through.
+  // Keep stop-points ordered by their beat position, then by studentId for a stable read-through.
   const order = new Map(beats.map((b: any, i: number) => [b.id, i]));
-  stops.sort((a, b) => (order.get(a.afterBeatId) ?? 0) - (order.get(b.afterBeatId) ?? 0));
+  filled.sort((a, b) => {
+    const bd = (order.get(a.afterBeatId) ?? 0) - (order.get(b.afterBeatId) ?? 0);
+    if (bd !== 0) return bd;
+    return a.studentId - b.studentId;
+  });
+  parsed.stop_points = filled;
 }
 
 type StoryFormat =
@@ -1206,30 +1280,44 @@ async function generateStory(
   const readingLevel = opts.reading_level ?? "auto";
   const spec = LENGTH_SPEC[length];
 
-  // Per-student stop-point quota — every student with active goals gets the same number.
-  // Short=3, standard=5, long=7. This is the source of truth for per-student balance.
-  const studentQuota = length === "long" ? 7 : length === "short" ? 3 : 5;
-  const perGoalTargets = new Map<number, number>();
+  // K stop-point MOMENTS in the story. At every moment, the clinician pauses and asks
+  // one question of EVERY student with active goals. So total stop-points = K * studentCount.
+  // Short=3 moments, standard=5, long=7.
+  const momentCount = length === "long" ? 7 : length === "short" ? 3 : 5;
+
+  // For each student, decide which goal they practice at each of the K moments
+  // (FOCUS-weighted, interleaved). Result: Map<studentId, goalId[]> of length momentCount.
+  const studentRotations = new Map<number, number[]>();
   for (const m of withGoals) {
     const goalsForStudent = m.goals.map((g: any) => ({ id: g.id, isFocus: priorityIds.has(g.id) }));
-    const alloc = allocateStudentQuota(studentQuota, goalsForStudent);
-    for (const [gid, count] of alloc) perGoalTargets.set(gid, count);
+    const rotation = buildStudentGoalRotation(goalsForStudent, momentCount);
+    studentRotations.set(m.student.id, rotation);
+  }
+
+  // Per-goal target counts (for status reporting in the prompt).
+  const perGoalTargets = new Map<number, number>();
+  for (const rotation of studentRotations.values()) {
+    for (const gid of rotation) perGoalTargets.set(gid, (perGoalTargets.get(gid) ?? 0) + 1);
   }
 
   const goalLines = withGoals
     .map((m) => {
+      const rotation = studentRotations.get(m.student.id) ?? [];
       const lines = m.goals
         .map((g) => {
           allGoalIds.push(g.id);
-          const target = perGoalTargets.get(g.id) ?? 1;
+          const target = perGoalTargets.get(g.id) ?? 0;
           const concreteTarget = extractConcreteTarget(g);
           const targetLine = concreteTarget
             ? `\n        CONCRETE TARGET (use this in every stop-point for this goal): ${concreteTarget}`
             : "";
-          return `    - goalId ${g.id} [${g.goal_type}] → give EXACTLY ${target} stop-point${target === 1 ? "" : "s"} [${statusFor(g.id)}]\n        FULL GOAL TEXT: ${g.text}\n        CRITERIA: ${g.target_criteria}${targetLine}`;
+          return `    - goalId ${g.id} [${g.goal_type}] → this student practices this goal at ${target} of the ${momentCount} pause moment${target === 1 ? "" : "s"} [${statusFor(g.id)}]\n        FULL GOAL TEXT: ${g.text}\n        CRITERIA: ${g.target_criteria}${targetLine}`;
         })
         .join("\n");
-      return `  Student "${m.student.name}" (studentId ${m.student.id}, grade ${m.student.grade ?? "?"}) — TOTAL ${studentQuota} stop-points for this student:\n${lines}`;
+      const rotationLine = rotation.length
+        ? `\n    ROTATION (which goal to target at each of the ${momentCount} moments, in order): ${rotation.map((gid, i) => `moment ${i + 1} → goalId ${gid}`).join("; ")}`
+        : "";
+      return `  Student "${m.student.name}" (studentId ${m.student.id}, grade ${m.student.grade ?? "?"}) — one question at EACH of the ${momentCount} pause moments:${rotationLine}\n${lines}`;
     })
     .join("\n");
   const fmt = FORMAT_GUIDANCE[format];
@@ -1258,11 +1346,12 @@ ${themeLine}
 THE STUDENTS AND THEIR ACTIVE GOALS:
 ${goalLines}
 
-STOP-POINT DISTRIBUTION — CRITICAL FAIRNESS RULE:
-Every student with active goals gets EXACTLY ${studentQuota} stop-points in this session — no more, no less.
-This is the top-level constraint. It ensures every student gets equal practice time regardless of how many goals they have.
-The per-goal counts in the goal list above ("→ give EXACTLY N stop-points") sum to ${studentQuota} for each student, with FOCUS goals getting more reps than light goals.
-Before returning, COUNT your stop-points per studentId and confirm EACH student has exactly ${studentQuota}. Then count per goalId and match the target counts. Every active goal must appear at least once.
+STOP-POINT DISTRIBUTION — CRITICAL STRUCTURE RULE:
+There are EXACTLY ${momentCount} pause MOMENTS across the story. At each pause moment, the clinician asks a question of EVERY student with active goals — one stop-point per student, all sharing the same afterBeatId.
+Total stop-points = ${momentCount} moments × ${withGoals.length} students = ${momentCount * withGoals.length}.
+Pick ${momentCount} distinct beats spread evenly across the story to be the pause moments (do not pause on the very first beat — the story needs to set up first, and prefer to include a pause near the end).
+For each student, use the ROTATION line above to decide which of their goals to target at each moment (moment 1 → the first goalId, moment 2 → the second, and so on).
+Before returning: COUNT your stop-points — you must have exactly ${momentCount * withGoals.length}. GROUP them by afterBeatId — you must have exactly ${momentCount} distinct beat values, each with ${withGoals.length} stop-points (one per student).
 
 LENGTH TARGET — IMPORTANT:
 - This piece must fill a FULL ~${spec.minutes}-minute therapy session of reading aloud plus stop-point discussion. Do NOT write a short piece.
@@ -1271,7 +1360,7 @@ LENGTH TARGET — IMPORTANT:
 
 REQUIREMENTS:
 - ${isNonfiction ? "FACTUAL ACCURACY: every fact stated must be verifiably true. Do NOT invent statistics, dates, or quotes. If you're unsure of a specific number, phrase it qualitatively (\"most\", \"many scientists believe\") instead of inventing precision." : "FERPA / privacy: the piece's CHARACTERS must be fictional and must NOT use any real student's name above. Use invented character names."}
-- Follow the STOP-POINT DISTRIBUTION rule above EXACTLY: each student gets ${studentQuota} total, and each goal gets the exact count listed next to it. Distribute stop-points across the beats; multiple stop-points may follow the same beat, but spread each goal's stop-points across different beats when possible.
+- Follow the STOP-POINT DISTRIBUTION rule above EXACTLY: ${momentCount} pause moments, one stop-point per student at each moment, using the ROTATION line to pick which goal to target for each student at each moment. All stop-points that share a moment have the same afterBeatId.
 - Each stop-point MUST reference concrete words, phrases, or ${isNonfiction ? "facts" : "events"} from the beat it follows (afterBeatId).
 - Each stop-point MUST use the goal's CONCRETE TARGET (specific sound, specific structure, specific skill) from the goal list above. Read the FULL GOAL TEXT and pull out the exact target the student is working on.
 - FORBIDDEN: NEVER write generic prompts like "Practice the target for [goal_type]" or "Use a moment from this scene" or "Student demonstrates the goal at the expected level". Every stop-point question and targetResponse must name the specific sound, structure, word, or skill from the goal text.
@@ -1355,11 +1444,22 @@ Return ONLY valid JSON with this exact shape:
     targetResponse: q.targetResponse || "",
   }));
 
-  // --- Light balancing pass: enforce rotation targets the model may have under-served. ---
-  // FOCUS goals want 3 stop-points, light/other goals want >=1. If the model fell short,
-  // top up by cloning an existing stop-point for that goal onto a different beat (so the
-  // student still gets the extra rep), or synthesizing a minimal one if none exists yet.
-  balanceStopPoints(parsed, { perGoalTargets, goalMeta, beats: parsed.beats });
+  // --- Structural pass: enforce the (momentCount × studentCount) slot plan. ---
+  // Pick K evenly-spaced beats to be the pause moments, then build the full slot plan:
+  // at each pause beat, one stop-point per student on their assigned rotation goal.
+  // balanceStopPoints reshapes the model output to match: reassigns beats/goals as needed,
+  // trims duplicates, and synthesizes any missing slot.
+  const stopBeatIds = pickStopBeatIds(parsed.beats, momentCount);
+  const slotPlan: Array<{ afterBeatId: string; studentId: number; goalId: number }> = [];
+  for (let i = 0; i < stopBeatIds.length; i++) {
+    const beatId = stopBeatIds[i];
+    for (const m of withGoals) {
+      const rotation = studentRotations.get(m.student.id) ?? [];
+      const goalId = rotation[i % Math.max(1, rotation.length)];
+      if (goalId) slotPlan.push({ afterBeatId: beatId, studentId: m.student.id, goalId });
+    }
+  }
+  balanceStopPoints(parsed, { slotPlan, goalMeta, beats: parsed.beats });
 
   parsed.target_goal_ids = Array.from(
     new Set(parsed.stop_points.map((s: any) => s.goalId).filter(Boolean)),

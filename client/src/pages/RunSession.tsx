@@ -155,13 +155,18 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
   const leftPanels = orderedPanels.filter((_, i) => i % 2 === 0);
   const rightPanels = orderedPanels.filter((_, i) => i % 2 === 1);
 
-  // Build an ordered list of (beatIndex, stopPoint) so we can step through them.
+  // Group stop-points by beat: each pause MOMENT contains one card per student in the group,
+  // so we step by beat (not by individual stop-point). The clinician asks every student a
+  // question at each pause before advancing.
   const steps = useMemo(() => {
-    const out: { beatIndex: number; stop: StopPoint }[] = [];
+    const out: { beatIndex: number; stops: StopPoint[] }[] = [];
     beats.forEach((beat, bi) => {
-      story.stop_points
-        .filter((sp) => sp.afterBeatId === beat.id)
-        .forEach((sp) => out.push({ beatIndex: bi, stop: sp }));
+      const stops = story.stop_points.filter((sp) => sp.afterBeatId === beat.id);
+      if (stops.length > 0) {
+        // Sort by studentId for a stable, predictable order across sessions.
+        stops.sort((a, b) => a.studentId - b.studentId);
+        out.push({ beatIndex: bi, stops });
+      }
     });
     return out;
   }, [beats, story.stop_points]);
@@ -312,12 +317,16 @@ function Runner({ story, students }: { story: Story; students: Student[] }) {
                 </p>
               </div>
 
-              {/* Stop-point */}
-              <StopPointRunner
-                key={current.stop.id}
-                stop={current.stop}
-                student={studentById.get(current.stop.studentId)}
-              />
+              {/* Stop-points — one card per student in the group at this pause moment */}
+              <div className="space-y-4">
+                {current.stops.map((sp) => (
+                  <StopPointRunner
+                    key={sp.id}
+                    stop={sp}
+                    student={studentById.get(sp.studentId)}
+                  />
+                ))}
+              </div>
 
               <div className="flex justify-end">
                 <Button
